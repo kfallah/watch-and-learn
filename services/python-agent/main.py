@@ -1,8 +1,9 @@
-import asyncio
 import json
 import logging
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+
 from agent import BrowserAgent
 
 logging.basicConfig(level=logging.INFO)
