@@ -46,6 +46,8 @@ services:
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - MCP_SERVER_URL=http://playwright-browser:3001
+    volumes:
+      - ./logs:/app/logs
     depends_on:
       playwright-browser:
         condition: service_healthy
