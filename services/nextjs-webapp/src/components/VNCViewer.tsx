@@ -120,11 +120,8 @@ export default function VNCViewer({
   }, [rfbLoaded, connect]);
 
   return (
-    <div className="relative w-full h-full overflow-hidden">
-      <div
-        ref={containerRef}
-        className="vnc-container w-full h-full"
-      />
+    <div className="relative w-full h-full">
+      <div ref={containerRef} className="w-full h-full" />
 
       {!isConnected && !error && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-800/80">
