@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+from datetime import datetime
+from uuid import uuid4
 
 import google.generativeai as genai
 from google.generativeai import types
@@ -26,6 +28,7 @@ class BrowserAgent:
         self.conversation_history = []
         self.is_recording = False
         self.screenshot_counter = 0
+        self.recording_session_id: str | None = None
 
     async def initialize(self):
         """Initialize the agent and connect to MCP server."""
@@ -100,37 +103,54 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
         """Enable or disable recording mode."""
         self.is_recording = enabled
         if enabled:
+            # Generate a new session ID
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            session_uuid = str(uuid4())[:8]
+            self.recording_session_id = f"{timestamp}_{session_uuid}"
             self.screenshot_counter = 0
             # Create screenshots directory if it doesn't exist
             os.makedirs("/tmp/screenshots", exist_ok=True)
-            logger.info("Recording mode enabled")
+            logger.info(f"Recording mode enabled - Session ID: {self.recording_session_id}")
         else:
-            logger.info("Recording mode disabled")
+            logger.info(f"Recording mode disabled - Session ID: {self.recording_session_id}")
+            self.recording_session_id = None
 
     async def _capture_screenshot(self, event_type: str) -> str | None:
         """Capture a screenshot and save it locally."""
         if not self.mcp_client:
+            logger.error("Cannot capture screenshot: MCP client not initialized")
             return None
 
         try:
             # Use browser_take_screenshot tool to capture the screen
+            logger.debug(f"Calling browser_take_screenshot for event: {event_type}")
             result = await self.mcp_client.call_tool("browser_take_screenshot", {})
+
+            # Check for errors in result
+            if result.error:
+                logger.error(f"Screenshot capture failed: {result.error}")
+                return None
 
             # Save the screenshot if it has images
             if result.has_images():
                 self.screenshot_counter += 1
-                filename = f"/tmp/screenshots/screenshot_{self.screenshot_counter:04d}_{event_type}.png"
+
+                # Include session ID in filename
+                session_part = f"{self.recording_session_id}_" if self.recording_session_id else ""
+                filename = f"/tmp/screenshots/{session_part}{self.screenshot_counter:04d}_{event_type}.png"
 
                 # Save the first image
                 with open(filename, "wb") as f:
                     f.write(result.images[0].data)
 
-                logger.info(f"Screenshot captured: {filename} (event: {event_type})")
+                logger.info(f"Screenshot captured successfully: {filename} (event: {event_type})")
                 return filename
+            else:
+                logger.warning(f"No image data in screenshot result for event: {event_type}")
+                return None
 
-            return None
         except Exception as e:
-            logger.warning(f"Failed to capture screenshot: {e}")
+            logger.error(f"Exception while capturing screenshot: {e}", exc_info=True)
             return None
 
     async def _execute_tool(self, tool_name: str, arguments: dict) -> MCPToolResult:
