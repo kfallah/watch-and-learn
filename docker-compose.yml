@@ -2,9 +2,9 @@ services:
   playwright-browser:
     build: ./services/playwright-browser
     ports:
-      - "6080:6080"   # websockify (noVNC WebSocket)
-      - "8765:8765"   # MJPEG video stream
-      - "3001:3001"   # MCP server (SSE)
+      - "6080:6080" # websockify (noVNC WebSocket)
+      - "8765:8765" # MJPEG video stream
+      - "3001:3001" # MCP server (SSE)
     environment:
       - DISPLAY=:99
       - SCREEN_WIDTH=1920
@@ -17,7 +17,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "6080"]
+      test: [ "CMD", "nc", "-z", "localhost", "6080" ]
       interval: 10s
       timeout: 5s
       start_period: 15s
@@ -45,18 +45,17 @@ services:
       - "8000:8000"
     volumes:
       - ./screenshots:/tmp/screenshots
+      - ./logs:/app/logs
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - MCP_SERVER_URL=http://playwright-browser:3001
-    volumes:
-      - ./logs:/app/logs
     depends_on:
       playwright-browser:
         condition: service_healthy
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -36,22 +36,38 @@ recording_agent_lock: asyncio.Lock | None = None
 
 @app.on_event("startup")
 async def startup_event():
-    global recording_agent_lock, shared_mcp_lock
+    global recording_agent_lock, shared_mcp_lock, shared_mcp_client
     recording_agent_lock = asyncio.Lock()
     shared_mcp_lock = asyncio.Lock()
 
+    # Initialize shared MCP client on startup with retries
+    logger.info("Initializing shared MCP client on startup")
+    max_retries = 10
+    retry_delay = 2
 
-async def get_shared_mcp_client() -> MCPClient:
-    """Get or create the shared MCP client."""
-    global shared_mcp_client
-
-    async with shared_mcp_lock:
-        if shared_mcp_client is None:
-            logger.info("Creating shared MCP client")
+    for attempt in range(max_retries):
+        try:
             shared_mcp_client = MCPClient(os.getenv("MCP_SERVER_URL", "http://playwright-browser:3001"))
             await shared_mcp_client.connect()
-            logger.info("Shared MCP client initialized")
-        return shared_mcp_client
+            logger.info("Shared MCP client initialized successfully")
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Failed to connect to MCP server (attempt {attempt + 1}/{max_retries}): {e}")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(f"Failed to connect to MCP server after {max_retries} attempts")
+                raise
+
+
+async def get_shared_mcp_client() -> MCPClient:
+    """Get the shared MCP client."""
+    global shared_mcp_client
+
+    if shared_mcp_client is None:
+        raise RuntimeError("Shared MCP client not initialized. This should not happen.")
+
+    return shared_mcp_client
 
 
 @app.websocket("/ws")
