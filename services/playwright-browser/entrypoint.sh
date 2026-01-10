@@ -23,6 +23,11 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
+# Clean up any stale X lock files
+echo "Cleaning up stale X lock files..."
+rm -f /tmp/.X${DISPLAY_NUM}-lock
+rm -f /tmp/.X11-unix/X${DISPLAY_NUM}
+
 # Start Xvfb (virtual framebuffer)
 echo "Starting Xvfb on display :${DISPLAY_NUM}..."
 Xvfb :${DISPLAY_NUM} -screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH} &
@@ -104,6 +109,8 @@ chromium \
     --disable-sync \
     --disable-background-networking \
     --no-first-run \
+    --no-sandbox \
+    --disable-setuid-sandbox \
     --remote-debugging-port=${CDP_PORT} \
     --remote-debugging-address=0.0.0.0 \
     "https://www.google.com" &

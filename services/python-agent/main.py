@@ -40,7 +40,17 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             message = json.loads(data)
 
-            if message.get("type") == "message":
+            if message.get("type") == "set_recording":
+                # Handle recording state change
+                is_recording = message.get("recording", False)
+                agent.set_recording(is_recording)
+                logger.info(f"Recording state changed to: {is_recording}")
+                await websocket.send_json({
+                    "type": "recording_status",
+                    "recording": is_recording
+                })
+
+            elif message.get("type") == "message":
                 user_content = message.get("content", "")
                 logger.info(f"Received message: {user_content}")
 

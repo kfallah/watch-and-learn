@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   playwright-browser:
     build: ./services/playwright-browser
@@ -11,6 +9,11 @@ services:
       - DISPLAY=:99
       - SCREEN_WIDTH=1920
       - SCREEN_HEIGHT=1080
+    shm_size: '2gb'
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
     networks:
       - app-network
     healthcheck:

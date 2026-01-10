@@ -9,7 +9,11 @@ interface Message {
   timestamp: Date
 }
 
-export default function ChatWindow() {
+interface ChatWindowProps {
+  isRecording?: boolean
+}
+
+export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
@@ -88,6 +92,18 @@ export default function ChatWindow() {
       wsRef.current?.close()
     }
   }, [connectWebSocket])
+
+  // Send recording state changes to backend
+  useEffect(() => {
+    if (isConnected && wsRef.current) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'set_recording',
+          recording: isRecording,
+        })
+      )
+    }
+  }, [isRecording, isConnected])
 
   const sendMessage = () => {
     if (!input.trim() || !isConnected || isLoading) return
