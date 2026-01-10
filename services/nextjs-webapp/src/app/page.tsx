@@ -70,7 +70,7 @@ export default function Home() {
             {viewMode === 'observe' ? (
               <VideoViewer onConnectionChange={setVideoConnected} />
             ) : (
-              <VNCViewer onConnectionChange={setVncConnected} />
+              <VNCViewer onConnectionChange={setVncConnected} isRecording={isRecording} />
             )}
           </div>
         </div>

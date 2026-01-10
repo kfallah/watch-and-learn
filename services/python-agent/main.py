@@ -1,5 +1,7 @@
+import asyncio
 import json
 import logging
+import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,15 +24,67 @@ app.add_middleware(
 # Store active connections and their agents
 active_connections: dict[str, tuple[WebSocket, BrowserAgent]] = {}
 
+# Shared MCP client for all agents
+from mcp_client import MCPClient
+shared_mcp_client: MCPClient | None = None
+shared_mcp_lock: asyncio.Lock | None = None
+
+# Global recording agent for manual control mode
+recording_agent: BrowserAgent | None = None
+recording_agent_lock: asyncio.Lock | None = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    global recording_agent_lock, shared_mcp_lock, shared_mcp_client
+    recording_agent_lock = asyncio.Lock()
+    shared_mcp_lock = asyncio.Lock()
+
+    # Initialize shared MCP client on startup with retries
+    logger.info("Initializing shared MCP client on startup")
+    max_retries = 10
+    retry_delay = 2
+
+    for attempt in range(max_retries):
+        try:
+            shared_mcp_client = MCPClient(os.getenv("MCP_SERVER_URL", "http://playwright-browser:3001"))
+            await shared_mcp_client.connect()
+            logger.info("Shared MCP client initialized successfully")
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Failed to connect to MCP server (attempt {attempt + 1}/{max_retries}): {e}")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(f"Failed to connect to MCP server after {max_retries} attempts")
+                raise
+
+
+async def get_shared_mcp_client() -> MCPClient:
+    """Get the shared MCP client."""
+    global shared_mcp_client
+
+    if shared_mcp_client is None:
+        raise RuntimeError("Shared MCP client not initialized. This should not happen.")
+
+    return shared_mcp_client
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connection_id = str(id(websocket))
 
-    # Create agent for this connection
+    # Create agent for this connection with shared MCP client
     agent = BrowserAgent()
-    await agent.initialize()
+    agent.mcp_client = await get_shared_mcp_client()
+    # Initialize chat without reinitializing MCP
+    system_prompt = agent._build_system_prompt()
+    agent.conversation_history = [
+        {"role": "user", "parts": [system_prompt]},
+        {"role": "model", "parts": ["Understood. I'm ready to help you interact with the browser. What would you like me to do?"]}
+    ]
+    agent.chat = agent.model.start_chat(history=agent.conversation_history)
     active_connections[connection_id] = (websocket, agent)
 
     logger.info(f"Client connected: {connection_id}")
@@ -47,7 +101,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info(f"Recording state changed to: {is_recording}")
                 await websocket.send_json({
                     "type": "recording_status",
-                    "recording": is_recording
+                    "recording": is_recording,
+                    "session_id": agent.recording_session_id
                 })
 
             elif message.get("type") == "message":
@@ -79,16 +134,69 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
-        # Cleanup
+        # Cleanup - don't disconnect shared MCP client
         if connection_id in active_connections:
-            _, agent = active_connections[connection_id]
-            await agent.cleanup()
             del active_connections[connection_id]
 
 
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+async def get_or_create_recording_agent() -> BrowserAgent:
+    """Get or create the global recording agent with shared MCP client."""
+    global recording_agent
+
+    async with recording_agent_lock:
+        if recording_agent is None:
+            logger.info("Creating new recording agent")
+            recording_agent = BrowserAgent()
+            recording_agent.mcp_client = await get_shared_mcp_client()
+            # Initialize chat without reinitializing MCP
+            system_prompt = recording_agent._build_system_prompt()
+            recording_agent.conversation_history = [
+                {"role": "user", "parts": [system_prompt]},
+                {"role": "model", "parts": ["Understood. I'm ready to help you interact with the browser. What would you like me to do?"]}
+            ]
+            recording_agent.chat = recording_agent.model.start_chat(history=recording_agent.conversation_history)
+            logger.info("Recording agent initialized with shared MCP client")
+        return recording_agent
+
+
+@app.post("/recording/start")
+async def start_recording():
+    """Enable recording mode"""
+    agent = await get_or_create_recording_agent()
+    agent.set_recording(True)
+    return {
+        "status": "recording",
+        "recording": True,
+        "session_id": agent.recording_session_id
+    }
+
+
+@app.post("/recording/stop")
+async def stop_recording():
+    """Disable recording mode"""
+    global recording_agent
+
+    if recording_agent:
+        recording_agent.set_recording(False)
+
+    return {"status": "stopped", "recording": False}
+
+
+@app.post("/recording/screenshot")
+async def capture_screenshot(event_type: str = "manual"):
+    """Capture a screenshot during manual control"""
+    agent = await get_or_create_recording_agent()
+
+    if agent.is_recording:
+        filename = await agent._capture_screenshot(event_type)
+        return {"status": "captured", "filename": filename}
+
+    return {"status": "not_recording", "filename": None}
 
 
 if __name__ == "__main__":
