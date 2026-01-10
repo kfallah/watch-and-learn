@@ -12,6 +12,9 @@ VIDEO_WS_PORT=8765
 
 echo "Starting browser container services..."
 
+# Clean up stale X11 lock files from previous runs
+rm -f /tmp/.X${DISPLAY_NUM}-lock /tmp/.X11-unix/X${DISPLAY_NUM} 2>/dev/null || true
+
 # Cleanup function
 cleanup() {
     echo "Shutting down services..."
@@ -87,6 +90,7 @@ echo "Video streaming server started successfully"
 CDP_PORT=9222
 echo "Starting Chromium browser with remote debugging on port ${CDP_PORT}..."
 chromium \
+    --no-sandbox \
     --disable-gpu \
     --disable-software-rasterizer \
     --disable-dev-shm-usage \
