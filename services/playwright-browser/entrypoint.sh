@@ -87,7 +87,6 @@ echo "Video streaming server started successfully"
 CDP_PORT=9222
 echo "Starting Chromium browser with remote debugging on port ${CDP_PORT}..."
 chromium \
-    --no-sandbox \
     --disable-gpu \
     --disable-software-rasterizer \
     --disable-dev-shm-usage \
