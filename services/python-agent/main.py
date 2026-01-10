@@ -22,6 +22,9 @@ app.add_middleware(
 # Store active connections and their agents
 active_connections: dict[str, tuple[WebSocket, BrowserAgent]] = {}
 
+# Global recording agent for manual control mode
+recording_agent: BrowserAgent | None = None
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -89,6 +92,46 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.post("/recording/start")
+async def start_recording():
+    """Enable recording mode"""
+    global recording_agent
+
+    if not recording_agent:
+        recording_agent = BrowserAgent()
+        await recording_agent.initialize()
+
+    recording_agent.set_recording(True)
+    return {"status": "recording", "recording": True}
+
+
+@app.post("/recording/stop")
+async def stop_recording():
+    """Disable recording mode"""
+    global recording_agent
+
+    if recording_agent:
+        recording_agent.set_recording(False)
+
+    return {"status": "stopped", "recording": False}
+
+
+@app.post("/recording/screenshot")
+async def capture_screenshot(event_type: str = "manual"):
+    """Capture a screenshot during manual control"""
+    global recording_agent
+
+    if not recording_agent:
+        recording_agent = BrowserAgent()
+        await recording_agent.initialize()
+
+    if recording_agent.is_recording:
+        filename = await recording_agent._capture_screenshot(event_type)
+        return {"status": "captured", "filename": filename}
+
+    return {"status": "not_recording", "filename": None}
 
 
 if __name__ == "__main__":

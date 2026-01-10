@@ -44,3 +44,6 @@ logs/
 # Docker
 .docker/
 .playwright-mcp/
+
+# Screenshots
+screenshots/

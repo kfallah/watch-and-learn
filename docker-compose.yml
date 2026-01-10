@@ -43,6 +43,8 @@ services:
     build: ./services/python-agent
     ports:
       - "8000:8000"
+    volumes:
+      - ./screenshots:/tmp/screenshots
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - MCP_SERVER_URL=http://playwright-browser:3001

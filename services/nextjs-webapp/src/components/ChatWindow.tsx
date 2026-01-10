@@ -95,14 +95,31 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
 
   // Send recording state changes to backend
   useEffect(() => {
-    if (isConnected && wsRef.current) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'set_recording',
-          recording: isRecording,
-        })
-      )
-    }
+    const updateRecording = async () => {
+      // Send via WebSocket for agent mode
+      if (isConnected && wsRef.current) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'set_recording',
+            recording: isRecording,
+          })
+        )
+      }
+
+      // Also call HTTP endpoint for control mode
+      try {
+        const agentUrl = typeof window !== 'undefined'
+          ? `http://${window.location.hostname}:8000`
+          : 'http://localhost:8000';
+
+        const endpoint = isRecording ? '/recording/start' : '/recording/stop';
+        await fetch(`${agentUrl}${endpoint}`, { method: 'POST' });
+      } catch (error) {
+        console.error('Failed to update recording state:', error);
+      }
+    };
+
+    updateRecording();
   }, [isRecording, isConnected])
 
   const sendMessage = () => {
