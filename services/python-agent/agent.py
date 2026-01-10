@@ -1,8 +1,9 @@
-import os
 import json
 import logging
+import os
+
 import google.generativeai as genai
-from typing import Optional, Union
+
 from mcp_client import MCPClient, MCPToolResult
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ class BrowserAgent:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel("gemini-2.0-flash")
         self.chat = None
-        self.mcp_client: Optional[MCPClient] = None
+        self.mcp_client: MCPClient | None = None
         self.conversation_history = []
 
     async def initialize(self):
@@ -104,7 +105,7 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
             logger.error(f"Tool execution error: {e}")
             return MCPToolResult(error=f"Error executing tool: {str(e)}")
 
-    def _extract_tool_call(self, text: str) -> Optional[tuple[str, dict]]:
+    def _extract_tool_call(self, text: str) -> tuple[str, dict] | None:
         """Extract tool call from response text."""
         # Look for JSON in the response
         try:
@@ -176,6 +177,9 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
 
     async def process_message(self, user_message: str) -> str:
         """Process a user message and return a response."""
+        if self.chat is None:
+            raise RuntimeError("Agent not initialized. Call initialize() first.")
+
         try:
             # Send message to Gemini
             response = self.chat.send_message(user_message)

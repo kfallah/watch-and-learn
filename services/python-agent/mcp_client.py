@@ -1,10 +1,10 @@
-import asyncio
+import base64
 import json
 import logging
-import httpx
-import base64
-from typing import Any, Optional
 from dataclasses import dataclass, field
+from typing import Optional
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class MCPToolResult:
     text_content: list[str] = field(default_factory=list)
     images: list[MCPImageContent] = field(default_factory=list)
     raw_result: dict = field(default_factory=dict)
-    error: Optional[str] = None
+    error: str | None = None
 
     @classmethod
     def from_mcp_response(cls, result: dict) -> "MCPToolResult":
@@ -106,10 +106,10 @@ class MCPClient:
 
     def __init__(self, server_url: str):
         self.server_url = server_url.rstrip('/')
-        self.http_client: Optional[httpx.AsyncClient] = None
+        self.http_client: httpx.AsyncClient | None = None
         self.tools: list[MCPTool] = []
         self._request_id = 0
-        self._session_id: Optional[str] = None
+        self._session_id: str | None = None
 
     async def connect(self):
         """Connect to the MCP server using Streamable HTTP transport."""
@@ -202,7 +202,7 @@ class MCPClient:
         self._request_id += 1
         return self._request_id
 
-    async def _send_request(self, method: str, params: dict, retry_on_session_error: bool = True) -> Optional[dict]:
+    async def _send_request(self, method: str, params: dict, retry_on_session_error: bool = True) -> dict | None:
         """Send a JSON-RPC request to the MCP server using Streamable HTTP."""
         if not self.http_client:
             raise RuntimeError("MCP client not connected")
@@ -283,7 +283,7 @@ class MCPClient:
         except Exception as e:
             logger.error(f"Failed to reinitialize MCP session: {e}")
 
-    async def _parse_sse_response(self, text: str) -> Optional[dict]:
+    async def _parse_sse_response(self, text: str) -> dict | None:
         """Parse SSE response to extract JSON-RPC result."""
         for line in text.split('\n'):
             if line.startswith('data: '):
