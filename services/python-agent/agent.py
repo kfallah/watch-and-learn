@@ -10,11 +10,7 @@ from pydantic import ValidationError
 
 from mcp_client import MCPClient, MCPToolResult
 from models import AgentResponse
-from prompts import (
-    TOOL_RESULT_REMINDER,
-    TOOL_RESULT_REMINDER_WITH_IMAGE,
-    build_system_prompt,
-)
+from prompts import TOOL_RESULT_REMINDER, TOOL_RESULT_REMINDER_WITH_IMAGE, build_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +18,10 @@ logger = logging.getLogger(__name__)
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://playwright-browser:3001")
 
 # Maximum iterations for the agentic loop to prevent infinite loops
-MAX_ITERATIONS = 10
+MAX_ITERATIONS = 30
+
+# Maximum consecutive failures per step before asking user for guidance
+MAX_RETRIES_PER_STEP = 3
 
 # Logs directory for dumping context
 LOGS_DIR = Path("/app/logs")
@@ -74,8 +73,8 @@ class BrowserAgent:
         """Parse LLM response into structured AgentResponse.
 
         Attempts to extract JSON from the response and validate it against
-        the AgentResponse schema. Falls back to treating the entire response
-        as a user message if parsing fails.
+        the AgentResponse schema. Falls back to extracting user_message field
+        or treating the entire response as a user message if parsing fails.
         """
         json_str = None
 
@@ -110,12 +109,44 @@ class BrowserAgent:
 
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse JSON from response: {e}")
+            # Try to extract user_message using regex as fallback
+            extracted = self._extract_user_message_fallback(json_str or text)
+            if extracted:
+                return AgentResponse(user_message=extracted)
         except ValidationError as e:
             logger.warning(f"Response validation failed: {e}")
 
-        # Fallback: treat the entire response as a user message
+        # Final fallback: treat the entire response as a user message
         logger.warning("Falling back to treating response as plain user message")
         return AgentResponse(user_message=text)
+
+    def _extract_user_message_fallback(self, text: str) -> str | None:
+        """Try to extract user_message from malformed JSON using regex.
+
+        When JSON parsing fails due to control characters or formatting issues,
+        this attempts to extract just the user_message field value.
+        """
+        import re
+
+        # Try to find "user_message": "..." pattern
+        # Handle both single and multi-line values
+        pattern = r'"user_message"\s*:\s*"((?:[^"\\]|\\.)*)"\s*[,}]'
+        match = re.search(pattern, text, re.DOTALL)
+
+        if match:
+            # Unescape the captured string
+            raw_value = match.group(1)
+            try:
+                # Use json.loads to properly unescape the string
+                unescaped = json.loads(f'"{raw_value}"')
+                logger.info("Successfully extracted user_message via regex fallback")
+                return unescaped
+            except json.JSONDecodeError:
+                # If unescaping fails, return the raw value with basic cleanup
+                logger.info("Using raw user_message from regex fallback")
+                return raw_value.replace('\\n', '\n').replace('\\"', '"')
+
+        return None
 
     def _build_tool_result_message(self, tool_name: str, result: MCPToolResult) -> list:
         """Build a multimodal message from tool result for Gemini."""
@@ -249,6 +280,7 @@ class BrowserAgent:
 
             # Agentic loop: keep executing tools until LLM stops requesting them
             iterations = 0
+            consecutive_failures = 0
             while iterations < MAX_ITERATIONS:
                 # Parse the structured response
                 parsed = self._parse_response(response_text)
@@ -283,6 +315,34 @@ class BrowserAgent:
 
                 if result.has_images():
                     logger.info(f"Tool returned {len(result.images)} image(s)")
+
+                # Track consecutive failures per step
+                if result.error:
+                    consecutive_failures += 1
+                    logger.warning(
+                        f"Tool failed ({consecutive_failures}/{MAX_RETRIES_PER_STEP}): "
+                        f"{result.error}"
+                    )
+                    if consecutive_failures >= MAX_RETRIES_PER_STEP:
+                        logger.error(
+                            f"Max retries ({MAX_RETRIES_PER_STEP}) reached for step"
+                        )
+                        self._dump_context("max_retries_per_step_reached")
+                        user_messages.append(
+                            f"I've encountered {MAX_RETRIES_PER_STEP} consecutive "
+                            f"failures trying to complete this action. Last error: "
+                            f"{result.error}\n\nPlease provide guidance on how to "
+                            "proceed or try a different approach."
+                        )
+                        break
+                else:
+                    # Success - reset the failure counter
+                    if consecutive_failures > 0:
+                        logger.info(
+                            f"Tool succeeded, resetting failure counter "
+                            f"(was {consecutive_failures})"
+                        )
+                    consecutive_failures = 0
 
                 # Build multimodal message with tool result (includes errors)
                 follow_up_parts = self._build_tool_result_message(tool_name, result)
