@@ -1,16 +1,21 @@
+"""MCP client using official mcp library with SSE transport.
+
+Uses a persistent SSE connection to maintain session state, preventing
+element refs from becoming stale between tool calls.
+"""
+
 import base64
-import json
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
-
-import httpx
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class MCPTool:
+    """Tool definition from MCP server."""
+
     name: str
     description: str
     input_schema: dict
@@ -19,13 +24,21 @@ class MCPTool:
 @dataclass
 class MCPImageContent:
     """Represents image content returned from MCP tool."""
+
     data: bytes  # Raw image bytes
     mime_type: str
 
     @classmethod
-    def from_mcp_content(cls, content: dict) -> Optional["MCPImageContent"]:
-        """Create from MCP content dict with type='image'."""
-        if content.get("type") == "image":
+    def from_mcp_content(cls, content: Any) -> "MCPImageContent | None":
+        """Create from MCP content object with image data."""
+        # Handle both dict format and object format
+        if hasattr(content, "data") and hasattr(content, "mimeType"):
+            try:
+                image_bytes = base64.b64decode(content.data)
+                return cls(data=image_bytes, mime_type=content.mimeType)
+            except Exception as e:
+                logger.error(f"Failed to decode image data: {e}")
+        elif isinstance(content, dict) and content.get("type") == "image":
             data = content.get("data", "")
             mime_type = content.get("mimeType", "image/png")
             try:
@@ -39,39 +52,54 @@ class MCPImageContent:
 @dataclass
 class MCPToolResult:
     """Result from an MCP tool call, containing text and/or images."""
+
     text_content: list[str] = field(default_factory=list)
     images: list[MCPImageContent] = field(default_factory=list)
-    raw_result: dict = field(default_factory=dict)
+    raw_result: Any = None
     error: str | None = None
 
     @classmethod
-    def from_mcp_response(cls, result: dict) -> "MCPToolResult":
+    def from_mcp_response(cls, result: Any) -> "MCPToolResult":
         """Parse MCP tool response into structured result."""
         tool_result = cls(raw_result=result)
 
-        if "error" in result:
-            tool_result.error = str(result["error"])
+        # Handle error case
+        if hasattr(result, "isError") and result.isError:
+            # Extract error message from content
+            if hasattr(result, "content"):
+                for content in result.content:
+                    if hasattr(content, "text"):
+                        tool_result.error = content.text
+                        break
             return tool_result
 
-        # Parse content array from MCP response
-        content_list = result.get("content", [])
+        # Parse content list from MCP response
+        content_list = getattr(result, "content", [])
         if not isinstance(content_list, list):
             content_list = [content_list]
 
         for content in content_list:
-            if not isinstance(content, dict):
-                tool_result.text_content.append(str(content))
-                continue
-
-            content_type = content.get("type", "text")
-
-            if content_type == "text":
-                tool_result.text_content.append(content.get("text", ""))
-            elif content_type == "image":
+            # Handle TextContent objects
+            if hasattr(content, "text"):
+                tool_result.text_content.append(content.text)
+            # Handle ImageContent objects
+            elif hasattr(content, "data") and hasattr(content, "mimeType"):
                 image = MCPImageContent.from_mcp_content(content)
                 if image:
                     tool_result.images.append(image)
-                    logger.info(f"Parsed image content: {image.mime_type}, {len(image.data)} bytes")
+                    logger.info(
+                        f"Parsed image content: {image.mime_type}, "
+                        f"{len(image.data)} bytes"
+                    )
+            # Handle dict format (fallback)
+            elif isinstance(content, dict):
+                content_type = content.get("type", "text")
+                if content_type == "text":
+                    tool_result.text_content.append(content.get("text", ""))
+                elif content_type == "image":
+                    image = MCPImageContent.from_mcp_content(content)
+                    if image:
+                        tool_result.images.append(image)
 
         return tool_result
 
@@ -83,71 +111,81 @@ class MCPToolResult:
         """Get combined text content."""
         return "\n".join(self.text_content)
 
-    def to_gemini_parts(self) -> list:
-        """Convert to Gemini API multimodal parts format."""
-        parts = []
-
-        # Add text content
-        if self.text_content:
-            parts.append(self.get_text())
-
-        # Add images in Gemini inline format
-        for image in self.images:
-            parts.append({
-                "mime_type": image.mime_type,
-                "data": image.data
-            })
-
-        return parts
-
 
 class MCPClient:
-    """Client for communicating with MCP server over Streamable HTTP transport."""
+    """Client for communicating with MCP server over SSE transport.
+
+    Uses the official mcp library to maintain a persistent connection,
+    preventing element refs from becoming stale between tool calls.
+    """
 
     def __init__(self, server_url: str):
-        self.server_url = server_url.rstrip('/')
-        self.http_client: httpx.AsyncClient | None = None
+        self.server_url = server_url.rstrip("/")
         self.tools: list[MCPTool] = []
-        self._request_id = 0
-        self._session_id: str | None = None
+        self._client: Any = None
+        self._session: Any = None
+        self._is_connected: bool = False
 
-    async def connect(self):
-        """Connect to the MCP server using Streamable HTTP transport."""
-        self.http_client = httpx.AsyncClient(timeout=60.0)
+    @property
+    def is_connected(self) -> bool:
+        """Return whether connected to MCP server."""
+        return self._is_connected
 
-        # Initialize connection
+    @property
+    def sse_url(self) -> str:
+        """Return the SSE endpoint URL."""
+        # Convert http://host:port to http://host:port/sse
+        return f"{self.server_url}/sse"
+
+    async def connect(self) -> None:
+        """Connect to the MCP server using SSE transport."""
+        if self._is_connected:
+            logger.warning("Already connected to MCP server")
+            return
+
         try:
-            # Send initialize request - POST directly to root with proper headers
-            init_response = await self._send_request("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "watch-and-learn-agent",
-                    "version": "1.0.0"
-                }
-            })
-            logger.info(f"MCP initialized: {init_response}")
+            from mcp import ClientSession
+            from mcp.client.sse import sse_client
 
-            # Send initialized notification
-            await self._send_notification("notifications/initialized", {})
+            logger.info(f"Connecting to MCP server at {self.sse_url}")
+
+            # Create SSE client with long read timeout for persistent connection
+            self._client = sse_client(
+                url=self.sse_url,
+                timeout=60.0,
+                sse_read_timeout=3600.0,  # 1 hour for long-running sessions
+            )
+            read_stream, write_stream = await self._client.__aenter__()
+
+            # Create and initialize session
+            self._session = ClientSession(read_stream, write_stream)
+            await self._session.__aenter__()
+            await self._session.initialize()
+
+            self._is_connected = True
 
             # List available tools
-            tools_response = await self._send_request("tools/list", {})
-            if tools_response and "tools" in tools_response:
-                self.tools = [
-                    MCPTool(
-                        name=t["name"],
-                        description=t.get("description", ""),
-                        input_schema=t.get("inputSchema", {})
-                    )
-                    for t in tools_response["tools"]
-                ]
-                logger.info(f"Loaded {len(self.tools)} tools from MCP server")
+            tools_response = await self._session.list_tools()
+            self.tools = [
+                MCPTool(
+                    name=tool.name,
+                    description=tool.description or "",
+                    input_schema=(
+                        tool.inputSchema if hasattr(tool, "inputSchema") else {}
+                    ),
+                )
+                for tool in tools_response.tools
+            ]
+
+            logger.info(f"Connected to MCP server with {len(self.tools)} tools")
+            logger.debug(f"Available tools: {[t.name for t in self.tools]}")
 
         except Exception as e:
-            logger.error(f"Failed to initialize MCP connection: {e}")
+            logger.error(f"Failed to connect to MCP server: {e}")
+            self._is_connected = False
             # Use fallback tools if connection fails
             self.tools = self._get_fallback_tools()
+            raise
 
     def _get_fallback_tools(self) -> list[MCPTool]:
         """Fallback tools when MCP server is not available."""
@@ -160,8 +198,8 @@ class MCPClient:
                     "properties": {
                         "url": {"type": "string", "description": "URL to navigate to"}
                     },
-                    "required": ["url"]
-                }
+                    "required": ["url"],
+                },
             ),
             MCPTool(
                 name="browser_click",
@@ -169,11 +207,14 @@ class MCPClient:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "element": {"type": "string", "description": "Element description"},
-                        "ref": {"type": "string", "description": "Element reference"}
+                        "element": {
+                            "type": "string",
+                            "description": "Element description",
+                        },
+                        "ref": {"type": "string", "description": "Element reference"},
                     },
-                    "required": ["element", "ref"]
-                }
+                    "required": ["element", "ref"],
+                },
             ),
             MCPTool(
                 name="browser_type",
@@ -181,161 +222,34 @@ class MCPClient:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "element": {"type": "string", "description": "Element description"},
+                        "element": {
+                            "type": "string",
+                            "description": "Element description",
+                        },
                         "ref": {"type": "string", "description": "Element reference"},
-                        "text": {"type": "string", "description": "Text to type"}
+                        "text": {"type": "string", "description": "Text to type"},
                     },
-                    "required": ["element", "ref", "text"]
-                }
+                    "required": ["element", "ref", "text"],
+                },
             ),
             MCPTool(
                 name="browser_snapshot",
                 description="Get accessibility snapshot of the page",
-                input_schema={
-                    "type": "object",
-                    "properties": {}
-                }
-            )
+                input_schema={"type": "object", "properties": {}},
+            ),
         ]
-
-    def _next_request_id(self) -> int:
-        self._request_id += 1
-        return self._request_id
-
-    async def _send_request(self, method: str, params: dict, retry_on_session_error: bool = True) -> dict | None:
-        """Send a JSON-RPC request to the MCP server using Streamable HTTP."""
-        if not self.http_client:
-            raise RuntimeError("MCP client not connected")
-
-        request = {
-            "jsonrpc": "2.0",
-            "id": self._next_request_id(),
-            "method": method,
-            "params": params
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream"
-        }
-
-        # Add session ID if we have one
-        if self._session_id:
-            headers["Mcp-Session-Id"] = self._session_id
-
-        try:
-            # POST to root endpoint for Streamable HTTP transport
-            response = await self.http_client.post(
-                f"{self.server_url}/mcp",
-                json=request,
-                headers=headers
-            )
-
-            # Store session ID from response if provided
-            if "mcp-session-id" in response.headers:
-                self._session_id = response.headers["mcp-session-id"]
-                logger.debug(f"Got session ID: {self._session_id}")
-
-            if response.status_code == 200:
-                content_type = response.headers.get("content-type", "")
-
-                if "text/event-stream" in content_type:
-                    # Parse SSE response
-                    return await self._parse_sse_response(response.text)
-                else:
-                    # Direct JSON response
-                    result = response.json()
-                    if "error" in result:
-                        logger.error(f"MCP error: {result['error']}")
-                        return None
-                    return result.get("result")
-            elif response.status_code == 202:
-                # Accepted - response will come via SSE
-                logger.info("Request accepted, awaiting SSE response")
-                return None
-            elif response.status_code == 404 and retry_on_session_error:
-                # Session expired/not found - clear session and retry
-                logger.warning("Session expired, reconnecting...")
-                self._session_id = None
-                await self._reinitialize_session()
-                return await self._send_request(method, params, retry_on_session_error=False)
-            else:
-                logger.error(f"MCP request failed: {response.status_code} - {response.text}")
-                return None
-
-        except Exception as e:
-            logger.error(f"MCP request error: {e}")
-            return None
-
-    async def _reinitialize_session(self):
-        """Re-initialize the MCP session."""
-        try:
-            init_response = await self._send_request("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "watch-and-learn-agent",
-                    "version": "1.0.0"
-                }
-            }, retry_on_session_error=False)
-            logger.info(f"MCP re-initialized: {init_response}")
-            await self._send_notification("notifications/initialized", {})
-        except Exception as e:
-            logger.error(f"Failed to reinitialize MCP session: {e}")
-
-    async def _parse_sse_response(self, text: str) -> dict | None:
-        """Parse SSE response to extract JSON-RPC result."""
-        for line in text.split('\n'):
-            if line.startswith('data: '):
-                try:
-                    data = json.loads(line[6:])
-                    if "result" in data:
-                        return data["result"]
-                    elif "error" in data:
-                        logger.error(f"MCP SSE error: {data['error']}")
-                        return None
-                except json.JSONDecodeError:
-                    continue
-        return None
-
-    async def _send_notification(self, method: str, params: dict):
-        """Send a JSON-RPC notification (no response expected)."""
-        if not self.http_client:
-            return
-
-        notification = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream"
-        }
-
-        if self._session_id:
-            headers["Mcp-Session-Id"] = self._session_id
-
-        try:
-            await self.http_client.post(
-                f"{self.server_url}/mcp",
-                json=notification,
-                headers=headers
-            )
-        except Exception as e:
-            logger.warning(f"Failed to send notification: {e}")
 
     async def call_tool(self, tool_name: str, arguments: dict) -> MCPToolResult:
         """Call a tool on the MCP server and return structured result."""
-        result = await self._send_request("tools/call", {
-            "name": tool_name,
-            "arguments": arguments
-        })
+        if not self._is_connected or not self._session:
+            return MCPToolResult(error="MCP client not connected")
 
-        if result:
+        try:
+            result = await self._session.call_tool(tool_name, arguments)
             return MCPToolResult.from_mcp_response(result)
-        return MCPToolResult(error=f"Failed to execute tool: {tool_name}")
+        except Exception as e:
+            logger.error(f"Tool execution error: {e}")
+            return MCPToolResult(error=f"Error executing tool: {e!s}")
 
     def get_tools_for_llm(self) -> list[dict]:
         """Get tool definitions in a format suitable for LLM function calling."""
@@ -343,13 +257,27 @@ class MCPClient:
             {
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": tool.input_schema
+                "parameters": tool.input_schema,
             }
             for tool in self.tools
         ]
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         """Disconnect from the MCP server."""
-        if self.http_client:
-            await self.http_client.aclose()
-            self.http_client = None
+        if not self._is_connected:
+            return
+
+        try:
+            if self._session:
+                await self._session.__aexit__(None, None, None)
+                self._session = None
+
+            if self._client:
+                await self._client.__aexit__(None, None, None)
+                self._client = None
+
+            self._is_connected = False
+            logger.info("Disconnected from MCP server")
+
+        except Exception as e:
+            logger.error(f"Error disconnecting from MCP server: {e}")
