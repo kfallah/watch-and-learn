@@ -25,6 +25,7 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
   const [input, setInput] = useState('')
   const [isConnected, setIsConnected] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -65,6 +66,14 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
         } else if (data.type === 'status') {
           // Handle status updates (e.g., "thinking", "executing action")
           console.log('Status:', data.content)
+        } else if (data.type === 'recording_status') {
+          // Handle recording status updates
+          if (data.session_id) {
+            setSessionId(data.session_id)
+            console.log('Recording session ID:', data.session_id)
+          } else {
+            setSessionId(null)
+          }
         }
       } catch (e) {
         console.error('Failed to parse message:', e)
@@ -95,14 +104,39 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
 
   // Send recording state changes to backend
   useEffect(() => {
-    if (isConnected && wsRef.current) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'set_recording',
-          recording: isRecording,
-        })
-      )
-    }
+    const updateRecording = async () => {
+      // Send via WebSocket for agent mode
+      if (isConnected && wsRef.current) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'set_recording',
+            recording: isRecording,
+          })
+        )
+      }
+
+      // Also call HTTP endpoint for control mode
+      try {
+        const agentUrl = typeof window !== 'undefined'
+          ? `http://${window.location.hostname}:8000`
+          : 'http://localhost:8000';
+
+        const endpoint = isRecording ? '/recording/start' : '/recording/stop';
+        const response = await fetch(`${agentUrl}${endpoint}`, { method: 'POST' });
+        const data = await response.json();
+
+        if (data.session_id) {
+          setSessionId(data.session_id);
+          console.log('Recording session ID:', data.session_id);
+        } else if (!isRecording) {
+          setSessionId(null);
+        }
+      } catch (error) {
+        console.error('Failed to update recording state:', error);
+      }
+    };
+
+    updateRecording();
   }, [isRecording, isConnected])
 
   const sendMessage = () => {
@@ -138,18 +172,25 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between shrink-0">
-        <h2 className="font-semibold text-white">AI Agent</h2>
-        <div className="flex items-center gap-2">
-          <div
-            className={`w-2 h-2 rounded-full ${
-              isConnected ? 'bg-green-500' : 'bg-red-500'
-            }`}
-          ></div>
-          <span className="text-xs text-gray-400">
-            {isConnected ? 'Connected' : 'Disconnected'}
-          </span>
+      <div className="px-4 py-3 border-b border-gray-800 shrink-0">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-white">AI Agent</h2>
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-2 h-2 rounded-full ${
+                isConnected ? 'bg-green-500' : 'bg-red-500'
+              }`}
+            ></div>
+            <span className="text-xs text-gray-400">
+              {isConnected ? 'Connected' : 'Disconnected'}
+            </span>
+          </div>
         </div>
+        {sessionId && isRecording && (
+          <div className="mt-2 text-xs text-gray-500">
+            Session: <span className="font-mono">{sessionId}</span>
+          </div>
+        )}
       </div>
 
       {/* Messages */}

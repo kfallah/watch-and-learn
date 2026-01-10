@@ -5,11 +5,13 @@ import { useEffect, useRef, useState, useCallback } from "react";
 interface VNCViewerProps {
   viewOnly?: boolean;
   onConnectionChange?: (connected: boolean) => void;
+  isRecording?: boolean;
 }
 
 export default function VNCViewer({
   viewOnly = false,
   onConnectionChange,
+  isRecording = false,
 }: VNCViewerProps) {
   const vncUrl = process.env.NEXT_PUBLIC_VNC_URL || "ws://localhost:6080";
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -26,6 +28,22 @@ export default function VNCViewer({
     },
     [onConnectionChange]
   );
+
+  const captureScreenshot = useCallback(async (eventType: string) => {
+    if (!isRecording) return;
+
+    try {
+      const agentUrl = typeof window !== 'undefined'
+        ? `http://${window.location.hostname}:8000`
+        : 'http://localhost:8000';
+
+      await fetch(`${agentUrl}/recording/screenshot?event_type=${eventType}`, {
+        method: 'POST',
+      });
+    } catch (error) {
+      console.error('Failed to capture screenshot:', error);
+    }
+  }, [isRecording]);
 
   // Dynamically import RFB (browser-only)
   useEffect(() => {
@@ -118,6 +136,65 @@ export default function VNCViewer({
       }
     };
   }, [rfbLoaded, connect]);
+
+  // Add event listeners for recording in control mode
+  useEffect(() => {
+    console.log("isRecording", isRecording);
+    if (!containerRef.current || !isRecording || !isConnected) return;
+    console.log("Adding event listeners");
+
+    const container = containerRef.current;
+    let typingTimeout: NodeJS.Timeout | null = null;
+
+    // Wait for canvas to be created by RFB
+    const checkForCanvas = setInterval(() => {
+      const canvas = container.querySelector('canvas');
+      if (canvas) {
+        clearInterval(checkForCanvas);
+        console.log("Canvas found, adding listeners");
+
+        const handleClick = (e: Event) => {
+          console.log("Click detected", e);
+          captureScreenshot('click');
+        };
+
+        const handleKeyDown = (e: Event) => {
+          console.log("Keydown detected", e);
+          // Debounce typing to avoid too many screenshots
+          if (typingTimeout) {
+            clearTimeout(typingTimeout);
+          }
+          typingTimeout = setTimeout(() => {
+            captureScreenshot('type');
+          }, 500);
+        };
+
+        // Use capture phase to intercept events before RFB
+        canvas.addEventListener('mousedown', handleClick, true);
+        canvas.addEventListener('keydown', handleKeyDown, true);
+        document.addEventListener('keydown', handleKeyDown, true);
+
+        // Store cleanup function
+        (container as any)._cleanup = () => {
+          console.log("Removing event listeners");
+          canvas.removeEventListener('mousedown', handleClick, true);
+          canvas.removeEventListener('keydown', handleKeyDown, true);
+          document.removeEventListener('keydown', handleKeyDown, true);
+          if (typingTimeout) {
+            clearTimeout(typingTimeout);
+          }
+        };
+      }
+    }, 100);
+
+    return () => {
+      clearInterval(checkForCanvas);
+      if ((container as any)._cleanup) {
+        (container as any)._cleanup();
+        delete (container as any)._cleanup;
+      }
+    };
+  }, [isRecording, captureScreenshot, isConnected]);
 
   return (
     <div className="relative w-full h-full">

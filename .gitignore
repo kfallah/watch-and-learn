@@ -46,3 +46,5 @@ logs/
 .playwright-mcp/
 
 */.env
+# Screenshots
+screenshots/
