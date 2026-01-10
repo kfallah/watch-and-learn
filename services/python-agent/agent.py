@@ -22,6 +22,8 @@ class BrowserAgent:
         self.chat = None
         self.mcp_client: Optional[MCPClient] = None
         self.conversation_history = []
+        self.is_recording = False
+        self.screenshot_counter = 0
 
     async def initialize(self):
         """Initialize the agent and connect to MCP server."""
@@ -85,13 +87,62 @@ When you need to perform an action in the browser, respond with a JSON tool call
 
 Be helpful, proactive, and always explain what you're doing. If something fails, suggest alternatives."""
 
+    def set_recording(self, enabled: bool):
+        """Enable or disable recording mode."""
+        self.is_recording = enabled
+        if enabled:
+            self.screenshot_counter = 0
+            # Create screenshots directory if it doesn't exist
+            os.makedirs("/tmp/screenshots", exist_ok=True)
+            logger.info("Recording mode enabled")
+        else:
+            logger.info("Recording mode disabled")
+
+    async def _capture_screenshot(self, event_type: str) -> Optional[str]:
+        """Capture a screenshot and save it locally."""
+        if not self.mcp_client:
+            return None
+
+        try:
+            # Use browser_screenshot tool if available, otherwise skip
+            result = await self.mcp_client.call_tool("browser_screenshot", {})
+
+            # Save the screenshot
+            self.screenshot_counter += 1
+            filename = f"/tmp/screenshots/screenshot_{self.screenshot_counter:04d}_{event_type}.png"
+
+            # The screenshot result might contain base64 data or file path
+            # For now, we'll just log that we attempted to capture
+            logger.info(f"Screenshot captured: {filename} (event: {event_type})")
+
+            # If the result contains image data, save it
+            if isinstance(result, dict) and "image" in result:
+                import base64
+                image_data = base64.b64decode(result["image"])
+                with open(filename, "wb") as f:
+                    f.write(image_data)
+
+            return filename
+        except Exception as e:
+            logger.warning(f"Failed to capture screenshot: {e}")
+            return None
+
     async def _execute_tool(self, tool_name: str, arguments: dict) -> str:
         """Execute a tool via MCP client."""
         if not self.mcp_client:
             return "Error: MCP client not connected"
 
         try:
+            # Capture screenshot before action if recording
+            if self.is_recording and tool_name in ["browser_click", "browser_type"]:
+                await self._capture_screenshot(f"before_{tool_name}")
+
             result = await self.mcp_client.call_tool(tool_name, arguments)
+
+            # Capture screenshot after action if recording
+            if self.is_recording and tool_name in ["browser_click", "browser_type"]:
+                await self._capture_screenshot(f"after_{tool_name}")
+
             return json.dumps(result, indent=2, default=str)
         except Exception as e:
             logger.error(f"Tool execution error: {e}")

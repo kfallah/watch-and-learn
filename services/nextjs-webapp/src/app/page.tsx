@@ -11,6 +11,7 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>('control')
   const [videoConnected, setVideoConnected] = useState(false)
   const [vncConnected, setVncConnected] = useState(false)
+  const [isRecording, setIsRecording] = useState(false)
 
   return (
     <main className="flex h-screen w-screen overflow-hidden bg-gray-900">
@@ -28,26 +29,37 @@ export default function Home() {
           </div>
 
           {/* Mode Toggle Buttons */}
-          <div className="flex rounded-lg overflow-hidden border border-gray-600">
+          <div className="flex items-center gap-2">
+            <div className="flex rounded-lg overflow-hidden border border-gray-600">
+              <button
+                onClick={() => setViewMode('observe')}
+                className={`px-3 py-1 text-xs transition-colors ${viewMode === 'observe'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+              >
+                Observe
+              </button>
+              <button
+                onClick={() => setViewMode('control')}
+                className={`px-3 py-1 text-xs transition-colors ${viewMode === 'control'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+              >
+                Control
+              </button>
+            </div>
+
+            {/* Record Button */}
             <button
-              onClick={() => setViewMode('observe')}
-              className={`px-3 py-1 text-xs transition-colors ${
-                viewMode === 'observe'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
+              onClick={() => setIsRecording(!isRecording)}
+              className={`px-3 py-1 text-xs rounded-lg border transition-colors ${isRecording
+                  ? 'bg-red-600 text-white border-red-500'
+                  : 'bg-gray-700 text-gray-300 border-gray-600 hover:bg-gray-600'
+                }`}
             >
-              Observe
-            </button>
-            <button
-              onClick={() => setViewMode('control')}
-              className={`px-3 py-1 text-xs transition-colors ${
-                viewMode === 'control'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              Control
+              {isRecording ? '● Recording' : 'Teach'}
             </button>
           </div>
         </div>
@@ -66,7 +78,7 @@ export default function Home() {
 
       {/* Chat Window - Right Panel */}
       <div className="w-[400px] h-full flex flex-col bg-gray-900 border-l border-gray-700">
-        <ChatWindow />
+        <ChatWindow isRecording={isRecording} />
       </div>
     </main>
   )
