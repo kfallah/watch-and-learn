@@ -3,6 +3,7 @@ import logging
 import os
 
 import google.generativeai as genai
+from google.generativeai import types
 
 from mcp_client import MCPClient, MCPToolResult
 
@@ -147,7 +148,7 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
 
     def _build_tool_result_message(self, tool_name: str, result: MCPToolResult) -> list:
         """Build a multimodal message from tool result for Gemini."""
-        parts = []
+        parts: list[str | types.Part] = []
 
         # Add text description
         if result.error:
@@ -159,12 +160,13 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
             else:
                 parts.append(f"Tool '{tool_name}' executed successfully.")
 
-        # Add images if present (Gemini inline format: dict with mime_type and data)
+        # Add images using SDK helper types.Part.from_bytes()
         for image in result.images:
-            parts.append({
-                "mime_type": image.mime_type,
-                "data": image.data
-            })
+            image_part = types.Part.from_bytes(
+                data=image.data,
+                mime_type=image.mime_type
+            )
+            parts.append(image_part)
             logger.info(f"Adding image to message: {image.mime_type}, {len(image.data)} bytes")
 
         # Add instruction for model
@@ -181,8 +183,8 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
             raise RuntimeError("Agent not initialized. Call initialize() first.")
 
         try:
-            # Send message to Gemini
-            response = self.chat.send_message(user_message)
+            # Send message to Gemini (async to avoid blocking event loop)
+            response = await self.chat.send_message_async(user_message)
             response_text = response.text
 
             # Check if response contains a tool call
@@ -203,8 +205,8 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
                 # Build multimodal message with text and images
                 follow_up_parts = self._build_tool_result_message(tool_name, result)
 
-                # Send multimodal result to Gemini
-                follow_up = self.chat.send_message(follow_up_parts)
+                # Send multimodal result to Gemini (async)
+                follow_up = await self.chat.send_message_async(follow_up_parts)
                 follow_up_text = follow_up.text
 
                 # Check if follow-up contains another tool call (for multi-step operations)
@@ -220,7 +222,7 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
                     final_parts = self._build_tool_result_message(next_tool_name, next_result)
                     final_parts.append("\nProvide a final summary for the user.")
 
-                    final_summary = self.chat.send_message(final_parts)
+                    final_summary = await self.chat.send_message_async(final_parts)
                     return final_summary.text
 
                 return follow_up_text
