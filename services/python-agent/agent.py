@@ -1,9 +1,11 @@
-import os
 import json
 import logging
+import os
+
 import google.generativeai as genai
-from typing import Optional
-from mcp_client import MCPClient
+from google.generativeai import types
+
+from mcp_client import MCPClient, MCPToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,7 @@ class BrowserAgent:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel("gemini-2.0-flash")
         self.chat = None
-        self.mcp_client: Optional[MCPClient] = None
+        self.mcp_client: MCPClient | None = None
         self.conversation_history = []
         self.is_recording = False
         self.screenshot_counter = 0
@@ -58,16 +60,23 @@ When you need to perform an action in the browser, respond with a JSON tool call
 ```
 
 ## Important Guidelines
-1. Always start by taking a snapshot (browser_snapshot) to see what's on the page
+1. Always start by taking a snapshot (browser_snapshot) or screenshot (browser_take_screenshot) to see what's on the page
 2. Use the element references from snapshots when clicking or typing
-3. After performing an action, take another snapshot to see the result
+3. After performing an action, take another snapshot or screenshot to see the result
 4. Explain what you're doing and what happened to the user
+5. Use browser_take_screenshot when you need to visually analyze the page (you'll see the actual image)
+6. Use browser_snapshot when you need element references for clicking/typing
 
 ## Common Workflows
 
 ### Navigate to a website:
 ```json
 {{"tool": "browser_navigate", "arguments": {{"url": "https://example.com"}}}}
+```
+
+### Take a screenshot (returns actual image):
+```json
+{{"tool": "browser_take_screenshot", "arguments": {{}}}}
 ```
 
 ### Click on an element:
@@ -80,7 +89,7 @@ When you need to perform an action in the browser, respond with a JSON tool call
 {{"tool": "browser_type", "arguments": {{"element": "Search input", "ref": "s10", "text": "hello world"}}}}
 ```
 
-### Get page content:
+### Get page content with element refs:
 ```json
 {{"tool": "browser_snapshot", "arguments": {{}}}}
 ```
@@ -98,39 +107,36 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
         else:
             logger.info("Recording mode disabled")
 
-    async def _capture_screenshot(self, event_type: str) -> Optional[str]:
+    async def _capture_screenshot(self, event_type: str) -> str | None:
         """Capture a screenshot and save it locally."""
         if not self.mcp_client:
             return None
 
         try:
-            # Use browser_screenshot tool if available, otherwise skip
-            result = await self.mcp_client.call_tool("browser_screenshot", {})
+            # Use browser_take_screenshot tool to capture the screen
+            result = await self.mcp_client.call_tool("browser_take_screenshot", {})
 
-            # Save the screenshot
-            self.screenshot_counter += 1
-            filename = f"/tmp/screenshots/screenshot_{self.screenshot_counter:04d}_{event_type}.png"
+            # Save the screenshot if it has images
+            if result.has_images():
+                self.screenshot_counter += 1
+                filename = f"/tmp/screenshots/screenshot_{self.screenshot_counter:04d}_{event_type}.png"
 
-            # The screenshot result might contain base64 data or file path
-            # For now, we'll just log that we attempted to capture
-            logger.info(f"Screenshot captured: {filename} (event: {event_type})")
-
-            # If the result contains image data, save it
-            if isinstance(result, dict) and "image" in result:
-                import base64
-                image_data = base64.b64decode(result["image"])
+                # Save the first image
                 with open(filename, "wb") as f:
-                    f.write(image_data)
+                    f.write(result.images[0].data)
 
-            return filename
+                logger.info(f"Screenshot captured: {filename} (event: {event_type})")
+                return filename
+
+            return None
         except Exception as e:
             logger.warning(f"Failed to capture screenshot: {e}")
             return None
 
-    async def _execute_tool(self, tool_name: str, arguments: dict) -> str:
-        """Execute a tool via MCP client."""
+    async def _execute_tool(self, tool_name: str, arguments: dict) -> MCPToolResult:
+        """Execute a tool via MCP client and return structured result."""
         if not self.mcp_client:
-            return "Error: MCP client not connected"
+            return MCPToolResult(error="MCP client not connected")
 
         try:
             # Capture screenshot before action if recording
@@ -143,12 +149,12 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
             if self.is_recording and tool_name in ["browser_click", "browser_type"]:
                 await self._capture_screenshot(f"after_{tool_name}")
 
-            return json.dumps(result, indent=2, default=str)
+            return result
         except Exception as e:
             logger.error(f"Tool execution error: {e}")
-            return f"Error executing tool: {str(e)}"
+            return MCPToolResult(error=f"Error executing tool: {str(e)}")
 
-    def _extract_tool_call(self, text: str) -> Optional[tuple[str, dict]]:
+    def _extract_tool_call(self, text: str) -> tuple[str, dict] | None:
         """Extract tool call from response text."""
         # Look for JSON in the response
         try:
@@ -188,11 +194,45 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
 
         return None
 
+    def _build_tool_result_message(self, tool_name: str, result: MCPToolResult) -> list:
+        """Build a multimodal message from tool result for Gemini."""
+        parts: list[str | types.Part] = []
+
+        # Add text description
+        if result.error:
+            parts.append(f"Tool '{tool_name}' failed with error: {result.error}")
+        else:
+            text_content = result.get_text()
+            if text_content:
+                parts.append(f"Tool '{tool_name}' executed. Result:\n```\n{text_content}\n```")
+            else:
+                parts.append(f"Tool '{tool_name}' executed successfully.")
+
+        # Add images using SDK helper types.Part.from_bytes()
+        for image in result.images:
+            image_part = types.Part.from_bytes(
+                data=image.data,
+                mime_type=image.mime_type
+            )
+            parts.append(image_part)
+            logger.info(f"Adding image to message: {image.mime_type}, {len(image.data)} bytes")
+
+        # Add instruction for model
+        if result.has_images():
+            parts.append("\nI've included a screenshot of the current page. Please describe what you see and continue with the user's request if needed.")
+        else:
+            parts.append("\nPlease summarize what happened. If you need to perform more actions, include another tool call.")
+
+        return parts
+
     async def process_message(self, user_message: str) -> str:
         """Process a user message and return a response."""
+        if self.chat is None:
+            raise RuntimeError("Agent not initialized. Call initialize() first.")
+
         try:
-            # Send message to Gemini
-            response = self.chat.send_message(user_message)
+            # Send message to Gemini (async to avoid blocking event loop)
+            response = await self.chat.send_message_async(user_message)
             response_text = response.text
 
             # Check if response contains a tool call
@@ -204,17 +244,17 @@ Be helpful, proactive, and always explain what you're doing. If something fails,
 
                 # Execute the tool
                 result = await self._execute_tool(tool_name, arguments)
-                logger.info(f"Tool result: {result[:500]}...")  # Log first 500 chars
+                result_text = result.get_text()
+                logger.info(f"Tool result: {result_text[:500] if result_text else 'No text'}...")
 
-                # Send result back to model for interpretation
-                follow_up_prompt = f"""Tool '{tool_name}' executed. Result:
-```
-{result}
-```
+                if result.has_images():
+                    logger.info(f"Tool returned {len(result.images)} image(s)")
 
-Please summarize what happened and what you see on the page. If you need to perform more actions to complete the user's request, include another tool call."""
+                # Build multimodal message with text and images
+                follow_up_parts = self._build_tool_result_message(tool_name, result)
 
-                follow_up = self.chat.send_message(follow_up_prompt)
+                # Send multimodal result to Gemini (async)
+                follow_up = await self.chat.send_message_async(follow_up_parts)
                 follow_up_text = follow_up.text
 
                 # Check if follow-up contains another tool call (for multi-step operations)
@@ -226,10 +266,11 @@ Please summarize what happened and what you see on the page. If you need to perf
 
                     next_result = await self._execute_tool(next_tool_name, next_arguments)
 
-                    # Get final summary
-                    final_summary = self.chat.send_message(
-                        f"Tool '{next_tool_name}' result:\n```\n{next_result}\n```\n\nProvide a final summary for the user."
-                    )
+                    # Build multimodal message for next result
+                    final_parts = self._build_tool_result_message(next_tool_name, next_result)
+                    final_parts.append("\nProvide a final summary for the user.")
+
+                    final_summary = await self.chat.send_message_async(final_parts)
                     return final_summary.text
 
                 return follow_up_text
