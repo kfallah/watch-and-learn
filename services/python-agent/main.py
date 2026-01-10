@@ -3,7 +3,7 @@ import json
 import logging
 import os
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent import BrowserAgent
@@ -26,6 +26,7 @@ active_connections: dict[str, tuple[WebSocket, BrowserAgent]] = {}
 
 # Shared MCP client for all agents
 from mcp_client import MCPClient
+
 shared_mcp_client: MCPClient | None = None
 shared_mcp_lock: asyncio.Lock | None = None
 
@@ -197,6 +198,41 @@ async def capture_screenshot(event_type: str = "manual"):
         return {"status": "captured", "filename": filename}
 
     return {"status": "not_recording", "filename": None}
+
+
+@app.post("/recording/metadata")
+async def save_recording_metadata(session_id: str = Form(...), description: str = Form(...)):
+    """Save metadata for a recording session"""
+    import re
+    from datetime import datetime
+
+    # Validate session_id format (timestamp_uuid)
+    if not re.match(r'^\d{8}_\d{6}_[a-f0-9]{8}$', session_id):
+        return {"status": "error", "message": "Invalid session_id format"}, 400
+
+    # Validate description is non-empty
+    if not description.strip():
+        return {"status": "error", "message": "Description is required"}, 400
+
+    try:
+        # Create metadata object
+        metadata = {
+            "session_id": session_id,
+            "description": description.strip(),
+            "created_at": datetime.now().isoformat()
+        }
+
+        # Save to JSON file
+        metadata_path = f"/tmp/screenshots/{session_id}_metadata.json"
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        logger.info(f"Metadata saved for session {session_id}: {description[:50]}...")
+        return {"status": "success", "metadata_path": metadata_path}
+
+    except Exception as e:
+        logger.error(f"Error saving metadata: {e}")
+        return {"status": "error", "message": str(e)}, 500
 
 
 if __name__ == "__main__":

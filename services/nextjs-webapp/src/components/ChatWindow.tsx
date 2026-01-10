@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import RecordingMetadataModal from './RecordingMetadataModal'
 
 interface Message {
   id: string
@@ -26,8 +27,11 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
   const [isConnected, setIsConnected] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [showMetadataModal, setShowMetadataModal] = useState(false)
+  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const prevIsRecordingRef = useRef<boolean>(false)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -105,6 +109,11 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
   // Send recording state changes to backend
   useEffect(() => {
     const updateRecording = async () => {
+      // Detect recording stopped (was true, now false)
+      const wasRecording = prevIsRecordingRef.current
+      const nowRecording = isRecording
+      const currentSessionId = sessionId
+
       // Send via WebSocket for agent mode
       if (isConnected && wsRef.current) {
         wsRef.current.send(
@@ -131,9 +140,18 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
         } else if (!isRecording) {
           setSessionId(null);
         }
+
+        // Show metadata modal when recording stops
+        if (wasRecording && !nowRecording && currentSessionId) {
+          setPendingSessionId(currentSessionId)
+          setShowMetadataModal(true)
+        }
       } catch (error) {
         console.error('Failed to update recording state:', error);
       }
+
+      // Update previous recording state
+      prevIsRecordingRef.current = isRecording
     };
 
     updateRecording();
@@ -169,9 +187,62 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
     }
   }
 
+  const handleMetadataSubmit = async (description: string) => {
+    if (!pendingSessionId) {
+      throw new Error('No session ID available')
+    }
+
+    const agentUrl = typeof window !== 'undefined'
+      ? `http://${window.location.hostname}:8000`
+      : 'http://localhost:8000'
+
+    const response = await fetch(`${agentUrl}/recording/metadata`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        session_id: pendingSessionId,
+        description,
+      }),
+    })
+
+    if (!response.ok) {
+      const data = await response.json()
+      throw new Error(data.message || 'Failed to save metadata')
+    }
+
+    // Close modal on success
+    setShowMetadataModal(false)
+    setPendingSessionId(null)
+
+    // Show success message
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: Date.now().toString(),
+        role: 'system',
+        content: `Recording saved: "${description}"`,
+        timestamp: new Date(),
+      },
+    ])
+  }
+
+  const handleMetadataClose = () => {
+    setShowMetadataModal(false)
+    setPendingSessionId(null)
+  }
+
   return (
-    <div className="flex flex-col h-full min-h-0">
-      {/* Header */}
+    <>
+      <RecordingMetadataModal
+        isOpen={showMetadataModal}
+        sessionId={pendingSessionId || ''}
+        onClose={handleMetadataClose}
+        onSubmit={handleMetadataSubmit}
+      />
+      <div className="flex flex-col h-full min-h-0">
+        {/* Header */}
       <div className="px-4 py-3 border-b border-gray-800 shrink-0">
         <div className="flex items-center justify-between">
           <h2 className="font-semibold text-white">AI Agent</h2>
@@ -259,6 +330,7 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </>
   )
 }
