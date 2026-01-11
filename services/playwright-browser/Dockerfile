@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip3 install --break-system-packages websockify
 
 # Install Python dependencies for video server
-RUN pip3 install --break-system-packages websockets
+RUN pip3 install --break-system-packages websockets aiohttp
 
 # Install Playwright and MCP server
 RUN npm install -g @playwright/mcp playwright
@@ -61,8 +61,9 @@ WORKDIR /home/app
 # 5900: VNC (internal, not exposed externally)
 # 6080: websockify (noVNC WebSocket bridge)
 # 8765: MJPEG video stream WebSocket
+# 8766: HTTP frame query API
 # 3001: MCP server (SSE transport)
-EXPOSE 6080 8765 3001
+EXPOSE 6080 8765 8766 3001
 
 # Health check
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \

@@ -3,10 +3,11 @@ import json
 import logging
 import os
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Form
+from fastapi import FastAPI, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent import BrowserAgent
+from mcp_client import MCPClient
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,7 +26,6 @@ app.add_middleware(
 active_connections: dict[str, tuple[WebSocket, BrowserAgent]] = {}
 
 # Shared MCP client for all agents
-from mcp_client import MCPClient
 
 shared_mcp_client: MCPClient | None = None
 shared_mcp_lock: asyncio.Lock | None = None
@@ -149,6 +149,7 @@ async def get_or_create_recording_agent() -> BrowserAgent:
     """Get or create the global recording agent with shared MCP client."""
     global recording_agent
 
+    assert recording_agent_lock is not None, "recording_agent_lock not initialized"
     async with recording_agent_lock:
         if recording_agent is None:
             logger.info("Creating new recording agent")

@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+import aiohttp
 import google.generativeai as genai
 from google.ai.generativelanguage_v1beta.types.content import Part as GenaiPart
 from pydantic import ValidationError
@@ -17,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 # MCP Server URL
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://playwright-browser:3001")
+
+# Video Buffer Server URL (for historical frame queries)
+VIDEO_BUFFER_URL = os.getenv("VIDEO_BUFFER_URL", "http://playwright-browser:8766")
 
 # Maximum iterations for the agentic loop to prevent infinite loops
 MAX_ITERATIONS = 30
@@ -77,40 +81,53 @@ class BrowserAgent:
             logger.info(f"Recording mode disabled - Session ID: {self.recording_session_id}")
             self.recording_session_id = None
 
-    async def _capture_screenshot(self, event_type: str) -> str | None:
-        """Capture a screenshot and save it locally."""
-        if not self.mcp_client:
-            logger.error("Cannot capture screenshot: MCP client not initialized")
-            return None
+    async def _capture_screenshot(self, event_type: str, offset_ms: int = 100) -> str | None:
+        """Capture a screenshot from video buffer and save it locally.
 
+        Args:
+            event_type: Description of the event (e.g., "before_browser_click")
+            offset_ms: How many milliseconds in the past to retrieve frame (default: 100)
+
+        Returns:
+            Path to saved screenshot file, or None if failed
+        """
         try:
-            # Use browser_take_screenshot tool to capture the screen
-            logger.debug(f"Calling browser_take_screenshot for event: {event_type}")
-            result = await self.mcp_client.call_tool("browser_take_screenshot", {})
+            # Query video buffer for historical frame
+            url = f"{VIDEO_BUFFER_URL}/frame?offset_ms={offset_ms}"
+            logger.debug(f"Requesting frame from video buffer: {url} (event: {event_type})")
 
-            # Check for errors in result
-            if result.error:
-                logger.error(f"Screenshot capture failed: {result.error}")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status == 404:
+                        logger.warning(f"No frame available in buffer for offset {offset_ms}ms")
+                        return None
+                    elif response.status != 200:
+                        logger.error(f"Frame request failed with status {response.status}: {await response.text()}")
+                        return None
+
+                    # Read JPEG data
+                    frame_data = await response.read()
+
+            if not frame_data:
+                logger.warning(f"Empty frame data received for event: {event_type}")
                 return None
 
-            # Save the screenshot if it has images
-            if result.has_images():
-                self.screenshot_counter += 1
+            # Save screenshot to file
+            self.screenshot_counter += 1
 
-                # Include session ID in filename
-                session_part = f"{self.recording_session_id}_" if self.recording_session_id else ""
-                filename = f"/tmp/screenshots/{session_part}{self.screenshot_counter:04d}_{event_type}.png"
+            # Include session ID in filename
+            session_part = f"{self.recording_session_id}_" if self.recording_session_id else ""
+            filename = f"/tmp/screenshots/{session_part}{self.screenshot_counter:04d}_{event_type}.jpg"
 
-                # Save the first image
-                with open(filename, "wb") as f:
-                    f.write(result.images[0].data)
+            with open(filename, "wb") as f:
+                f.write(frame_data)
 
-                logger.info(f"Screenshot captured successfully: {filename} (event: {event_type})")
-                return filename
-            else:
-                logger.warning(f"No image data in screenshot result for event: {event_type}")
-                return None
+            logger.info(f"Screenshot captured from buffer: {filename} (event: {event_type}, offset: {offset_ms}ms)")
+            return filename
 
+        except TimeoutError:
+            logger.error(f"Timeout while requesting frame from video buffer for event: {event_type}")
+            return None
         except Exception as e:
             logger.error(f"Exception while capturing screenshot: {e}", exc_info=True)
             return None
@@ -121,15 +138,11 @@ class BrowserAgent:
             return MCPToolResult(error="MCP client not connected")
 
         try:
-            # Capture screenshot before action if recording
+            # Capture screenshot before action if recording (from 100ms ago buffer)
             if self.is_recording and tool_name in ["browser_click", "browser_type"]:
-                await self._capture_screenshot(f"before_{tool_name}")
+                await self._capture_screenshot(f"before_{tool_name}", offset_ms=100)
 
             result = await self.mcp_client.call_tool(tool_name, arguments)
-
-            # Capture screenshot after action if recording
-            if self.is_recording and tool_name in ["browser_click", "browser_type"]:
-                await self._capture_screenshot(f"after_{tool_name}")
 
             return result
         except Exception as e:
