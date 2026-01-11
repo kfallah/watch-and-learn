@@ -36,9 +36,9 @@ class ParsedCommand(BaseModel):
         description="What type of information to retrieve"
     )
     target_count: int = Field(
-        description="Number of companies to research (1-5)",
+        description="Number of companies to research (1-6)",
         ge=1,
-        le=5
+        le=6
     )
     specific_companies: list[str] = Field(
         default_factory=list,
@@ -252,7 +252,7 @@ Create a professional summary table and brief analysis.""")
         for pattern in patterns:
             match = re.search(pattern, text)
             if match:
-                return min(int(match.group(1)), 5)  # Cap at 5
+                return min(int(match.group(1)), 6)  # Cap at 6
 
         return 5
 

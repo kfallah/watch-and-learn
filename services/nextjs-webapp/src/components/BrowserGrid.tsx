@@ -132,7 +132,7 @@ export default function BrowserGrid({ workers, activeCount }: BrowserGridProps) 
   // Filter to only show workers that should be visible
   const visibleWorkers = activeCount
     ? workers.slice(0, activeCount)
-    : workers.filter((w) => w.status !== "idle" || workers.length <= 5);
+    : workers.filter((w) => w.status !== "idle" || workers.length <= 6);
 
   // Determine grid columns based on worker count
   const getGridClass = (count: number) => {

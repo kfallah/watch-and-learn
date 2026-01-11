@@ -14,6 +14,15 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Build-time args for Next.js public environment variables
+ARG NEXT_PUBLIC_WORKER_COUNT=6
+ARG NEXT_PUBLIC_VIDEO_BASE_PORT=8766
+ARG NEXT_PUBLIC_VNC_BASE_PORT=6081
+
+ENV NEXT_PUBLIC_WORKER_COUNT=$NEXT_PUBLIC_WORKER_COUNT
+ENV NEXT_PUBLIC_VIDEO_BASE_PORT=$NEXT_PUBLIC_VIDEO_BASE_PORT
+ENV NEXT_PUBLIC_VNC_BASE_PORT=$NEXT_PUBLIC_VNC_BASE_PORT
+
 RUN npm run build
 
 # Production image, copy all the files and run next

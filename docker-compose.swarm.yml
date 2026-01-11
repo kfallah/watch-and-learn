@@ -6,7 +6,7 @@
 #
 # This configuration includes:
 #   - 1 orchestrator service (port 8100)
-#   - 5 browser worker instances (ports 8001-8005, 8766-8770, etc.)
+#   - 6 browser worker instances (ports 8001-8006, 8766-8771, etc.)
 #   - 1 Next.js webapp with multi-browser grid view (port 3000)
 
 services:
@@ -18,7 +18,7 @@ services:
     ports:
       - "8100:8100"
     environment:
-      - MAX_WORKERS=5
+      - MAX_WORKERS=6
       - COMPANIES_DATA_PATH=/app/data/companies.json
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
@@ -34,6 +34,8 @@ services:
       worker-4:
         condition: service_healthy
       worker-5:
+        condition: service_healthy
+      worker-6:
         condition: service_healthy
     networks:
       - swarm-network
@@ -289,6 +291,55 @@ services:
       retries: 10
 
   # ==========================================================================
+  # Worker 6 - Browser + Agent pair
+  # ==========================================================================
+  browser-6:
+    build: ./services/playwright-browser
+    ports:
+      - "6086:6080"
+      - "8771:8765"
+      - "3016:3001"
+    environment:
+      - DISPLAY=:99
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+    shm_size: '2gb'
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    networks:
+      - swarm-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "3001"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
+
+  worker-6:
+    build: ./services/python-agent
+    ports:
+      - "8006:8000"
+    volumes:
+      - ./screenshots/worker-6:/tmp/screenshots
+      - ./logs/worker-6:/app/logs
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - MCP_SERVER_URL=http://browser-6:3001
+    depends_on:
+      browser-6:
+        condition: service_healthy
+    networks:
+      - swarm-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
+
+  # ==========================================================================
   # Next.js Webapp - Enhanced with multi-browser grid view
   # ==========================================================================
   nextjs-webapp:
@@ -299,7 +350,7 @@ services:
       # Connect to orchestrator instead of single agent
       - NEXT_PUBLIC_ORCHESTRATOR_URL=ws://localhost:8100/ws
       # Worker video streams for grid view
-      - NEXT_PUBLIC_WORKER_COUNT=5
+      - NEXT_PUBLIC_WORKER_COUNT=6
       - NEXT_PUBLIC_VIDEO_BASE_PORT=8766
       - NEXT_PUBLIC_VNC_BASE_PORT=6081
     depends_on:
