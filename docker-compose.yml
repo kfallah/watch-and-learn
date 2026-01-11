@@ -48,6 +48,7 @@ services:
       - ./logs:/app/logs
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
       - MCP_SERVER_URL=http://playwright-browser:3001
     depends_on:
       playwright-browser:
