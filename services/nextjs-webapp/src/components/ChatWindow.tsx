@@ -54,30 +54,31 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
       try {
         const data = JSON.parse(event.data)
         if (data.type === 'response') {
-          const newMessages: Message[] = []
-
-          // Add memory message if demo was injected
-          if (data.demo_metadata) {
-            newMessages.push({
-              id: Date.now().toString() + '-memory',
-              role: 'memory',
-              content: `Memory retrieved: ${data.demo_metadata.description}`,
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: data.content,
               timestamp: new Date(),
-              thumbnail: data.demo_metadata.thumbnail,
-              imageCount: data.demo_metadata.image_count,
-            })
-          }
-
-          // Add assistant response
-          newMessages.push({
-            id: Date.now().toString(),
-            role: 'assistant',
-            content: data.content,
-            timestamp: new Date(),
-          })
-
-          setMessages((prev) => [...prev, ...newMessages])
+            },
+          ])
           setIsLoading(false)
+        } else if (data.type === 'memory_injected') {
+          // Memory was injected - show it immediately
+          if (data.metadata) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: Date.now().toString() + '-memory',
+                role: 'memory',
+                content: `Memory retrieved: ${data.metadata.description}`,
+                timestamp: new Date(),
+                thumbnail: data.metadata.thumbnail,
+                imageCount: data.metadata.image_count,
+              },
+            ])
+          }
         } else if (data.type === 'status') {
           // Handle status updates (e.g., "thinking", "executing action")
           console.log('Status:', data.content)

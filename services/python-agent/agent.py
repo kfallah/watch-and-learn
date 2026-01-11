@@ -148,6 +148,28 @@ class BrowserAgent:
 
         return parts, metadata
 
+    async def inject_demo_content(self) -> dict | None:
+        """Inject demo content into the conversation.
+
+        Should be called before the first user message.
+        Returns metadata for UI display, or None if no demo available.
+        """
+        if self.chat is None:
+            raise RuntimeError("Agent not initialized. Call initialize() first.")
+
+        if self.demo_injected:
+            return None
+
+        self.demo_injected = True
+        demo_parts, metadata = self._load_demo_content()
+
+        if demo_parts:
+            await self.chat.send_message_async(demo_parts)
+            logger.info("Injected demo content into conversation")
+            return metadata
+
+        return None
+
     def _build_system_prompt(self) -> str:
         """Build system prompt with available tools and their parameter schemas."""
         tools = self.mcp_client.get_tools_for_llm() if self.mcp_client else []
@@ -399,7 +421,7 @@ class BrowserAgent:
             f"images={total_images})"
         )
 
-    async def process_message(self, user_message: str) -> tuple[str, dict | None]:
+    async def process_message(self, user_message: str) -> str:
         """Process a user message and return a response.
 
         Uses an agentic loop that continues executing tools until the LLM
@@ -408,25 +430,11 @@ class BrowserAgent:
         Only user_message fields from the structured response are returned
         to the user. Thinking is logged internally, and tool calls are
         executed silently.
-
-        Returns:
-            A tuple of (response_text, demo_metadata) where demo_metadata is
-            present only on the first message if demo content was injected.
         """
         if self.chat is None:
             raise RuntimeError("Agent not initialized. Call initialize() first.")
 
-        demo_metadata = None
-
         try:
-            # Inject demo content on first message
-            if not self.demo_injected:
-                self.demo_injected = True
-                demo_parts, demo_metadata = self._load_demo_content()
-                if demo_parts:
-                    await self.chat.send_message_async(demo_parts)
-                    logger.info("Injected demo content before first user message")
-
             # Send initial message to Gemini
             response = await self.chat.send_message_async(user_message)
             response_text = response.text
@@ -525,8 +533,8 @@ class BrowserAgent:
 
             # Return collected user messages (or a default if none)
             if user_messages:
-                return "\n\n".join(user_messages), demo_metadata
-            return "Task completed.", demo_metadata
+                return "\n\n".join(user_messages)
+            return "Task completed."
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
