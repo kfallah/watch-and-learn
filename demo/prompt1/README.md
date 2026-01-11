@@ -1,1 +1,1 @@
-Example images of a task to add YC 2025 winter startups at https://www.ycombinator.com/companies?batch=Winter%202025 to a google docs at https://docs.google.com/document/d/1IzFp0tiDhllwW_mdyCQKkvNY7uKFYNulge1A4gAvCYs/edit?tab=t.0.
+Example images of a task to add YC 2025 winter startups at https://www.ycombinator.com/companies?batch=Winter%202025 to a google docs.
