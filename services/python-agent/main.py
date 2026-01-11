@@ -269,9 +269,10 @@ async def save_recording_metadata(session_id: str = Form(...), description: str 
     try:
         description_clean = description.strip()
 
-        # Find all screenshots for this session
-        screenshot_pattern = f"/tmp/screenshots/{session_id}_*.png"
-        screenshot_paths = sorted(glob.glob(screenshot_pattern))
+        # Find all screenshots for this session (both .jpg from video buffer and .png from legacy)
+        screenshot_pattern_jpg = f"/tmp/screenshots/{session_id}_*.jpg"
+        screenshot_pattern_png = f"/tmp/screenshots/{session_id}_*.png"
+        screenshot_paths = sorted(glob.glob(screenshot_pattern_jpg) + glob.glob(screenshot_pattern_png))
         logger.info(f"Found {len(screenshot_paths)} screenshots for session {session_id}")
 
         # Create metadata object (still save JSON for backward compatibility)

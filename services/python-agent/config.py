@@ -7,7 +7,7 @@ class Config:
     """Application configuration."""
 
     # MongoDB Atlas
-    MONGODB_URI: str = "mongodb+srv://db_user:jbLCw9HxHZxl01MD@cluster0.pcozgom.mongodb.net/?appName=Cluster0"
+    MONGODB_URI: str = os.getenv("MONGODB_URI", "")
     MONGODB_DATABASE: str = "watch_and_learn"
     MONGODB_RECORDINGS_COLLECTION: str = "recordings"
 

@@ -10,7 +10,7 @@ Uses Send() API to process multiple companies in parallel:
 
 import json
 import operator
-from typing import TypedDict, Annotated, List, Optional
+from typing import TypedDict, Annotated, List
 from datetime import datetime
 
 from langgraph.graph import StateGraph, END

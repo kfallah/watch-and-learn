@@ -33,13 +33,38 @@ class RecordingStorage:
     def connect(self) -> None:
         """Establish connection to MongoDB Atlas."""
         logger.info(f"Connecting to MongoDB: {self.database_name}/{self.collection_name}")
-        self.client = MongoClient(self.uri)
+
+        # Connection options for MongoDB Atlas with better SSL/TLS handling
+        self.client = MongoClient(
+            self.uri,
+            tls=True,  # Enable TLS/SSL
+            tlsAllowInvalidCertificates=False,  # Validate certificates
+            serverSelectionTimeoutMS=10000,  # 10 second timeout for faster startup
+            connectTimeoutMS=10000,  # 10 second connection timeout
+            socketTimeoutMS=10000,  # 10 second socket timeout
+            retryWrites=True,  # Enable retryable writes
+            w='majority',  # Wait for majority acknowledgment
+            directConnection=False,  # Let driver handle replica set discovery
+            retryReads=True,  # Enable retryable reads
+        )
+
+        # Test connection with ping
+        try:
+            self.client.admin.command('ping')
+            logger.info("MongoDB connection test successful")
+        except Exception as e:
+            logger.warning(f"Initial ping failed, but continuing: {e}")
+
         db = self.client[self.database_name]
         self.collection = db[self.collection_name]
 
-        # Create indexes
-        self.collection.create_index("created_at")
-        logger.info("MongoDB connection established")
+        # Create indexes (this will also test connection)
+        try:
+            self.collection.create_index("created_at")
+            logger.info("MongoDB connection established")
+        except Exception as e:
+            logger.error(f"Failed to create index: {e}")
+            raise
 
     def close(self) -> None:
         """Close MongoDB connection."""
