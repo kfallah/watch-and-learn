@@ -1,7 +1,9 @@
+import asyncio
 import base64
 import json
 import logging
 import os
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -10,6 +12,7 @@ from uuid import uuid4
 import aiohttp
 import google.generativeai as genai
 from google.ai.generativelanguage_v1beta.types.content import Part as GenaiPart
+from google.api_core import exceptions as google_exceptions
 from pydantic import ValidationError
 
 from mcp_client import MCPClient, MCPToolResult
@@ -32,6 +35,12 @@ MAX_ITERATIONS = 30
 
 # Maximum consecutive failures per step before asking user for guidance
 MAX_RETRIES_PER_STEP = 3
+
+# Exponential backoff settings for API rate limiting (429 errors)
+API_MAX_RETRIES = 5
+API_BASE_DELAY = 1.0  # Base delay in seconds
+API_MAX_DELAY = 60.0  # Maximum delay in seconds
+API_EXPONENTIAL_BASE = 2  # Exponential backoff multiplier
 
 # Logs directory for dumping context
 LOGS_DIR = Path("/app/logs")
@@ -59,6 +68,50 @@ class BrowserAgent:
         self.screenshot_counter = 0
         self.demo_injected = False
         self.recording_session_id: str | None = None
+
+    async def _send_message_with_retry(self, message) -> str:
+        """Send a message to Gemini with exponential backoff for rate limiting.
+
+        Args:
+            message: The message to send (string or list of parts).
+
+        Returns:
+            The response text from Gemini.
+
+        Raises:
+            Exception: If all retries are exhausted.
+        """
+        last_exception = None
+
+        for attempt in range(API_MAX_RETRIES):
+            try:
+                response = await self.chat.send_message_async(message)
+                return response.text
+            except google_exceptions.ResourceExhausted as e:
+                last_exception = e
+                if attempt < API_MAX_RETRIES - 1:
+                    # Calculate delay with exponential backoff and jitter
+                    delay = min(
+                        API_BASE_DELAY * (API_EXPONENTIAL_BASE ** attempt),
+                        API_MAX_DELAY
+                    )
+                    # Add jitter (±25%)
+                    jitter = delay * 0.25 * (2 * random.random() - 1)
+                    delay = delay + jitter
+
+                    logger.warning(
+                        f"Rate limited (429). Retrying in {delay:.1f}s "
+                        f"(attempt {attempt + 1}/{API_MAX_RETRIES})"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Rate limit retries exhausted after {API_MAX_RETRIES} attempts")
+            except Exception:
+                # For non-rate-limit errors, don't retry
+                raise
+
+        # All retries exhausted
+        raise last_exception or Exception("Rate limit retries exhausted")
 
     async def initialize(self):
         """Initialize the agent and connect to MCP server."""
@@ -175,7 +228,7 @@ class BrowserAgent:
         demo_parts, metadata = self._load_demo_content()
 
         if demo_parts:
-            await self.chat.send_message_async(demo_parts)
+            await self._send_message_with_retry(demo_parts)
             logger.info("Injected demo content into conversation")
             return metadata
 
@@ -543,9 +596,8 @@ class BrowserAgent:
             else:
                 message_parts = user_message
 
-            # Send initial message to Gemini
-            response = await self.chat.send_message_async(message_parts)
-            response_text = response.text
+            # Send initial message to Gemini (with retry for rate limiting)
+            response_text = await self._send_message_with_retry(message_parts)
 
             # Collect user messages to return at the end
             user_messages: list[str] = []
@@ -619,9 +671,8 @@ class BrowserAgent:
                 # Build multimodal message with tool result (includes errors)
                 follow_up_parts = self._build_tool_result_message(tool_name, result)
 
-                # Send result to Gemini and get next response
-                response = await self.chat.send_message_async(follow_up_parts)
-                response_text = response.text
+                # Send result to Gemini and get next response (with retry for rate limiting)
+                response_text = await self._send_message_with_retry(follow_up_parts)
 
                 # Dump context after each tool execution for debugging
                 self._dump_context(f"after_tool_{tool_name}_iter{iterations}")
