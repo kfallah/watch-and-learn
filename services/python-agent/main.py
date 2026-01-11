@@ -145,6 +145,35 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.post("/execute")
+async def execute_task(request: dict):
+    """Execute a browser automation task from the orchestrator.
+
+    This endpoint receives task prompts from the orchestrator's WorkerPool
+    and uses the BrowserAgent to execute browser automation.
+    """
+    prompt = request.get("prompt", "")
+
+    if not prompt:
+        return {"response": "Error: No prompt provided", "status": "error"}
+
+    try:
+        # Get or create the agent (reusing the recording agent pattern)
+        agent = await get_or_create_recording_agent()
+
+        logger.info(f"Executing task: {prompt[:100]}...")
+
+        # Process the message through the agent
+        response = await agent.process_message(prompt)
+
+        logger.info(f"Task completed successfully")
+        return {"response": response, "status": "success"}
+
+    except Exception as e:
+        logger.error(f"Error executing task: {e}")
+        return {"response": f"Error: {str(e)}", "status": "error"}
+
+
 async def get_or_create_recording_agent() -> BrowserAgent:
     """Get or create the global recording agent with shared MCP client."""
     global recording_agent

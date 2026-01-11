@@ -1,8 +1,11 @@
 """Command Parser for Multi-Agent Browser Swarm.
 
-Uses LangChain + Gemini 2.0 Flash for intelligent command parsing and result synthesis.
-Parses natural language commands like "Look up 5 YC companies evaluation value"
-into structured SwarmCommand objects for task distribution.
+Uses Google Gemini 2.0 Flash directly (raw SDK) for intelligent command parsing
+and result synthesis. Parses natural language commands like "Look up 5 YC companies
+evaluation value" into structured SwarmCommand objects for task distribution.
+
+This implementation follows the original single-agent pattern using google.generativeai
+instead of LangChain for cleaner, more direct integration.
 """
 
 import json
@@ -12,8 +15,7 @@ import re
 from pathlib import Path
 from typing import Literal, Optional
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
+import google.generativeai as genai
 from pydantic import BaseModel, Field
 
 from models import SwarmCommand, CompanyInfo
@@ -54,7 +56,11 @@ class ParsedCommand(BaseModel):
 
 
 class CommandParser:
-    """LangChain-powered command parser with Gemini 2.0 Flash."""
+    """Gemini-powered command parser using raw google.generativeai SDK.
+
+    This follows the original single-agent pattern for direct Gemini integration
+    without LangChain wrapper dependencies.
+    """
 
     def __init__(self, companies_path: Optional[Path] = None):
         self.companies_path = companies_path or COMPANIES_JSON_PATH
@@ -63,35 +69,32 @@ class CommandParser:
         self._setup_llm()
 
     def _setup_llm(self):
-        """Initialize LangChain with Gemini 2.0 Flash."""
+        """Initialize Gemini 2.0 Flash using raw SDK."""
         if not GEMINI_API_KEY:
             logger.warning("GEMINI_API_KEY not found - falling back to regex parsing")
-            self.llm = None
+            self.model = None
             return
 
         try:
-            self.llm = ChatGoogleGenerativeAI(
-                model="gemini-2.0-flash",
-                temperature=0,
-                google_api_key=GEMINI_API_KEY,
-            )
+            genai.configure(api_key=GEMINI_API_KEY)
+            self.model = genai.GenerativeModel("gemini-2.0-flash")
 
-            # Build company context for the prompt
+            # Build company context for prompts
             company_names = [c.name for c in self.companies[:50]]  # Limit context
-            company_list = ", ".join(company_names) if company_names else "No companies loaded"
+            self.company_list = ", ".join(company_names) if company_names else "No companies loaded"
 
-            self.parse_prompt = ChatPromptTemplate.from_messages([
-                ("system", f"""You are a command parser for a browser automation swarm that researches YC companies.
+            # Store prompt templates as strings
+            self.parse_system_prompt = f"""You are a command parser for a browser automation swarm that researches YC companies.
 
 AVAILABLE COMPANIES (Winter 2025 batch):
-{company_list}
+{self.company_list}
 
 TASK: Parse the user's natural language command into a structured research request.
 
 RULES:
 1. Determine the action type (lookup/analyze/compare/track)
 2. Identify the query type (valuation/overview/funding/team/product)
-3. Extract the number of companies to research (default: 5, max: 5)
+3. Extract the number of companies to research (default: 5, max: 6)
 4. Identify any specific company names mentioned
 5. Note any industry filters (fintech, healthcare, AI, etc.)
 
@@ -99,16 +102,13 @@ OUTPUT: Return ONLY a valid JSON object with this structure:
 {{
   "action": "lookup|analyze|compare|track",
   "query_type": "valuation|overview|funding|team|product",
-  "target_count": 1-5,
+  "target_count": 1-6,
   "specific_companies": [],
   "industry_filter": null,
   "reasoning": "brief explanation"
-}}"""),
-                ("human", "{user_command}")
-            ])
+}}"""
 
-            self.synthesis_prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are a financial analyst synthesizing research results about YC companies.
+            self.synthesis_system_prompt = """You are a financial analyst synthesizing research results about YC companies.
 
 TASK: Create a professional markdown table summarizing the research findings.
 
@@ -117,19 +117,13 @@ RULES:
 2. Include relevant columns based on query type
 3. Add a brief insight/summary at the end
 4. Handle missing data gracefully with "N/A" or "Unknown"
-5. Be concise but informative"""),
-                ("human", """Query Type: {query_type}
-Research Results:
-{results}
+5. Be concise but informative"""
 
-Create a professional summary table and brief analysis.""")
-            ])
-
-            logger.info("LangChain Gemini 2.0 Flash initialized successfully")
+            logger.info("Gemini 2.0 Flash initialized successfully (raw SDK)")
 
         except Exception as e:
-            logger.error(f"Failed to initialize LangChain: {e}")
-            self.llm = None
+            logger.error(f"Failed to initialize Gemini: {e}")
+            self.model = None
 
     def _load_companies(self):
         """Load companies from JSON file."""
@@ -169,7 +163,7 @@ Create a professional summary table and brief analysis.""")
         Uses Gemini 2.0 Flash for intelligent parsing, with regex fallback.
         """
         # Try LLM parsing first
-        if self.llm:
+        if self.model:
             try:
                 parsed = self._parse_with_llm(user_input)
                 if parsed:
@@ -188,11 +182,18 @@ Create a professional summary table and brief analysis.""")
         return self._parse_with_regex(user_input)
 
     def _parse_with_llm(self, user_input: str) -> Optional[ParsedCommand]:
-        """Parse command using Gemini 2.0 Flash."""
-        chain = self.parse_prompt | self.llm
+        """Parse command using Gemini 2.0 Flash (raw SDK).
 
-        response = chain.invoke({"user_command": user_input})
-        content = response.content
+        Uses generate_content() directly instead of LangChain chains.
+        """
+        # Build the full prompt
+        prompt = f"""{self.parse_system_prompt}
+
+User command: {user_input}"""
+
+        # Call Gemini directly
+        response = self.model.generate_content(prompt)
+        content = response.text
 
         # Clean up response if it has markdown code blocks
         if "```" in content:
@@ -376,7 +377,7 @@ Please find:
         Uses Gemini 2.0 Flash for intelligent synthesis if available.
         """
         # Try LLM synthesis first
-        if self.llm and results:
+        if self.model and results:
             try:
                 return self._synthesize_with_llm(results, query_type)
             except Exception as e:
@@ -386,18 +387,23 @@ Please find:
         return self._format_basic_table(results, query_type)
 
     def _synthesize_with_llm(self, results: list[dict], query_type: str) -> str:
-        """Synthesize results using Gemini 2.0 Flash for intelligent analysis."""
-        chain = self.synthesis_prompt | self.llm
+        """Synthesize results using Gemini 2.0 Flash (raw SDK).
 
-        # Format results for the prompt
+        Uses generate_content() directly instead of LangChain chains.
+        """
+        # Build the full prompt
         results_text = json.dumps(results, indent=2, default=str)
+        prompt = f"""{self.synthesis_system_prompt}
 
-        response = chain.invoke({
-            "query_type": query_type,
-            "results": results_text
-        })
+Query Type: {query_type}
+Research Results:
+{results_text}
 
-        return response.content
+Create a professional summary table and brief analysis."""
+
+        # Call Gemini directly
+        response = self.model.generate_content(prompt)
+        return response.text
 
     def _format_basic_table(self, results: list[dict], query_type: str) -> str:
         """Basic markdown table formatting (fallback)."""

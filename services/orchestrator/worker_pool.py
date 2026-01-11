@@ -22,18 +22,24 @@ from models import (
 logger = logging.getLogger(__name__)
 
 
-# Port allocation strategy: Base + worker_id
-BASE_AGENT_PORT = 8001
+# Port allocation strategy
+# Internal ports (inside Docker network) - all workers use same internal port
+INTERNAL_AGENT_PORT = 8000  # Workers listen on 8000 internally
+# External ports (exposed to host) - Base + worker_id for UI/debugging
 BASE_VIDEO_PORT = 8766
 BASE_MCP_PORT = 3011
 BASE_VNC_PORT = 6081
 
 
 def generate_worker_config(worker_id: int) -> WorkerConfig:
-    """Generate port configuration for a worker based on its ID."""
+    """Generate port configuration for a worker based on its ID.
+
+    Note: agent_port uses the INTERNAL port (8000) for Docker network communication.
+    The external mapped ports (8001-8006) are only used from outside Docker.
+    """
     return WorkerConfig(
         worker_id=worker_id,
-        agent_port=BASE_AGENT_PORT + worker_id - 1,
+        agent_port=INTERNAL_AGENT_PORT,  # All workers use internal port 8000
         video_port=BASE_VIDEO_PORT + worker_id - 1,
         mcp_port=BASE_MCP_PORT + worker_id - 1,
         vnc_port=BASE_VNC_PORT + worker_id - 1,
