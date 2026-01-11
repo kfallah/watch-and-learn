@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import RecordingMetadataModal from './RecordingMetadataModal'
 
 interface Message {
   id: string
@@ -27,8 +28,12 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
   const [input, setInput] = useState('')
   const [isConnected, setIsConnected] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [showMetadataModal, setShowMetadataModal] = useState(false)
+  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const prevIsRecordingRef = useRef<boolean>(false)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -82,6 +87,14 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
         } else if (data.type === 'status') {
           // Handle status updates (e.g., "thinking", "executing action")
           console.log('Status:', data.content)
+        } else if (data.type === 'recording_status') {
+          // Handle recording status updates
+          if (data.session_id) {
+            setSessionId(data.session_id)
+            console.log('Recording session ID:', data.session_id)
+          } else {
+            setSessionId(null)
+          }
         }
       } catch (e) {
         console.error('Failed to parse message:', e)
@@ -112,14 +125,53 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
 
   // Send recording state changes to backend
   useEffect(() => {
-    if (isConnected && wsRef.current) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'set_recording',
-          recording: isRecording,
-        })
-      )
-    }
+    const updateRecording = async () => {
+      // Detect recording stopped (was true, now false)
+      const wasRecording = prevIsRecordingRef.current
+      const nowRecording = isRecording
+      const currentSessionId = sessionId
+
+      // Send via WebSocket for agent mode
+      if (isConnected && wsRef.current) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'set_recording',
+            recording: isRecording,
+          })
+        )
+      }
+
+      // Also call HTTP endpoint for control mode
+      try {
+        const agentUrl = typeof window !== 'undefined'
+          ? `http://${window.location.hostname}:8000`
+          : 'http://localhost:8000';
+
+        const endpoint = isRecording ? '/recording/start' : '/recording/stop';
+        const response = await fetch(`${agentUrl}${endpoint}`, { method: 'POST' });
+        const data = await response.json();
+
+        if (data.session_id) {
+          setSessionId(data.session_id);
+          console.log('Recording session ID:', data.session_id);
+        } else if (!isRecording) {
+          setSessionId(null);
+        }
+
+        // Show metadata modal when recording stops
+        if (wasRecording && !nowRecording && currentSessionId) {
+          setPendingSessionId(currentSessionId)
+          setShowMetadataModal(true)
+        }
+      } catch (error) {
+        console.error('Failed to update recording state:', error);
+      }
+
+      // Update previous recording state
+      prevIsRecordingRef.current = isRecording
+    };
+
+    updateRecording();
   }, [isRecording, isConnected])
 
   const sendMessage = () => {
@@ -152,21 +204,81 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
     }
   }
 
+  const handleMetadataSubmit = async (description: string) => {
+    if (!pendingSessionId) {
+      throw new Error('No session ID available')
+    }
+
+    const agentUrl = typeof window !== 'undefined'
+      ? `http://${window.location.hostname}:8000`
+      : 'http://localhost:8000'
+
+    const response = await fetch(`${agentUrl}/recording/metadata`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        session_id: pendingSessionId,
+        description,
+      }),
+    })
+
+    if (!response.ok) {
+      const data = await response.json()
+      throw new Error(data.message || 'Failed to save metadata')
+    }
+
+    // Close modal on success
+    setShowMetadataModal(false)
+    setPendingSessionId(null)
+
+    // Show success message
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: Date.now().toString(),
+        role: 'system',
+        content: `Recording saved: "${description}"`,
+        timestamp: new Date(),
+      },
+    ])
+  }
+
+  const handleMetadataClose = () => {
+    setShowMetadataModal(false)
+    setPendingSessionId(null)
+  }
+
   return (
-    <div className="flex flex-col h-full min-h-0">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between shrink-0">
-        <h2 className="font-semibold text-white">AI Agent</h2>
-        <div className="flex items-center gap-2">
-          <div
-            className={`w-2 h-2 rounded-full ${
-              isConnected ? 'bg-green-500' : 'bg-red-500'
-            }`}
-          ></div>
-          <span className="text-xs text-gray-400">
-            {isConnected ? 'Connected' : 'Disconnected'}
-          </span>
+    <>
+      <RecordingMetadataModal
+        isOpen={showMetadataModal}
+        sessionId={pendingSessionId || ''}
+        onClose={handleMetadataClose}
+        onSubmit={handleMetadataSubmit}
+      />
+      <div className="flex flex-col h-full min-h-0">
+        {/* Header */}
+      <div className="px-4 py-3 border-b border-gray-800 shrink-0">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-white">AI Agent</h2>
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-2 h-2 rounded-full ${
+                isConnected ? 'bg-green-500' : 'bg-red-500'
+              }`}
+            ></div>
+            <span className="text-xs text-gray-400">
+              {isConnected ? 'Connected' : 'Disconnected'}
+            </span>
+          </div>
         </div>
+        {sessionId && isRecording && (
+          <div className="mt-2 text-xs text-gray-500">
+            Session: <span className="font-mono">{sessionId}</span>
+          </div>
+        )}
       </div>
 
       {/* Messages */}
@@ -251,6 +363,7 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </>
   )
 }

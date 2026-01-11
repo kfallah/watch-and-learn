@@ -44,3 +44,7 @@ logs/
 # Docker
 .docker/
 .playwright-mcp/
+
+*/.env
+# Screenshots
+screenshots/
