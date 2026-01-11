@@ -1,3 +1,0 @@
-Add 3 startups from the YC 2025 batch to the google docs at https://docs.google.com/document/d/1IzFp0tiDhllwW_mdyCQKkvNY7uKFYNulge1A4gAvCYs/edit?tab=t.0. For each startup, open a new tab, navigate to google.com, and check how much the startup raised. Add all 5 startups and their recent raise to the google docs as a new line. 
-
-Create a table in google docs with the company name and recent raise as columns. Add all the retrieved startups and their recent raise to the table.

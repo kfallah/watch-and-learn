@@ -54,32 +54,30 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
       try {
         const data = JSON.parse(event.data)
         if (data.type === 'response') {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: Date.now().toString(),
-              role: 'assistant',
-              content: data.content,
+          const newMessages: Message[] = []
+
+          // Add memory message if demo was injected
+          if (data.demo_metadata) {
+            newMessages.push({
+              id: Date.now().toString() + '-memory',
+              role: 'memory',
+              content: `Memory retrieved: ${data.demo_metadata.description}`,
               timestamp: new Date(),
-            },
-          ])
-          setIsLoading(false)
-        } else if (data.type === 'context_injected') {
-          if (data.metadata) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Date.now().toString(),
-                role: 'memory',
-                content: `Memory retrieved: ${data.metadata.description}`,
-                timestamp: new Date(),
-                thumbnail: data.metadata.thumbnail,
-                imageCount: data.metadata.image_count,
-              },
-            ])
-          } else {
-            console.log('No more demo content available:', data.error)
+              thumbnail: data.demo_metadata.thumbnail,
+              imageCount: data.demo_metadata.image_count,
+            })
           }
+
+          // Add assistant response
+          newMessages.push({
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: data.content,
+            timestamp: new Date(),
+          })
+
+          setMessages((prev) => [...prev, ...newMessages])
+          setIsLoading(false)
         } else if (data.type === 'status') {
           // Handle status updates (e.g., "thinking", "executing action")
           console.log('Status:', data.content)
@@ -151,16 +149,6 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
       e.preventDefault()
       sendMessage()
     }
-  }
-
-  const injectContext = () => {
-    if (!isConnected) return
-
-    wsRef.current?.send(
-      JSON.stringify({
-        type: 'inject_context',
-      })
-    )
   }
 
   return (
@@ -244,14 +232,6 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
       {/* Input */}
       <div className="p-4 border-t border-gray-800 shrink-0">
         <div className="flex gap-2">
-          <button
-            onClick={injectContext}
-            disabled={!isConnected || isLoading}
-            className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-3 py-2 rounded-lg transition-colors text-sm"
-            title="Inject demo context"
-          >
-            + Memory
-          </button>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}

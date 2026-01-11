@@ -47,7 +47,7 @@ class BrowserAgent:
         self.conversation_history = []
         self.is_recording = False
         self.screenshot_counter = 0
-        self.user_message_count = 0
+        self.demo_injected = False
 
     async def initialize(self):
         """Initialize the agent and connect to MCP server."""
@@ -63,11 +63,8 @@ class BrowserAgent:
 
         self.chat = self.model.start_chat(history=self.conversation_history)
 
-    def _load_demo_content(self, prompt_number: int) -> tuple[list | None, dict | None]:
-        """Load demo images and README for a specific prompt number.
-
-        Args:
-            prompt_number: The prompt number (1-indexed) to load demo content for.
+    def _load_demo_content(self) -> tuple[list | None, dict | None]:
+        """Load demo images and description from the demo folder.
 
         Returns a tuple of:
             - list of message parts (text + images) if demo content exists, or None
@@ -81,39 +78,33 @@ class BrowserAgent:
             logger.info(f"Demo directory not found: {DEMO_DIR}")
             return None, None
 
-        # Look for promptN folder
-        prompt_dir = DEMO_DIR / f"prompt{prompt_number}"
-        if not prompt_dir.exists():
-            logger.info(f"No demo content for prompt {prompt_number}: {prompt_dir}")
+        description_path = DEMO_DIR / "description.txt"
+        if not description_path.exists():
+            logger.info(f"Demo description not found: {description_path}")
             return None, None
 
-        readme_path = prompt_dir / "README.md"
-        if not readme_path.exists():
-            logger.info(f"Demo README not found: {readme_path}")
-            return None, None
+        # Read the description
+        description_text = description_path.read_text().strip()
 
-        # Read the README description
-        readme_text = readme_path.read_text().strip()
-
-        # Find all image files, sorted by name
+        # Find all image files, sorted by name (ignore prompt.txt)
         image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
         image_files = sorted(
-            f for f in prompt_dir.iterdir()
+            f for f in DEMO_DIR.iterdir()
             if f.suffix.lower() in image_extensions
         )
 
         if not image_files:
-            logger.info(f"No demo images found in {prompt_dir}")
+            logger.info(f"No demo images found in {DEMO_DIR}")
             return None, None
 
         # Build the message parts
         parts: list[str | genai.protos.Part] = []
 
-        # Add introductory text with README content
+        # Add introductory text with description
         intro_text = (
             "Here is a demonstration of how to complete a similar task. "
             "Use these images as a reference for how to interact with the browser.\n\n"
-            f"Task description: {readme_text}\n\n"
+            f"Task description: {description_text}\n\n"
             "The following images show the step-by-step process:"
         )
         parts.append(intro_text)
@@ -147,37 +138,15 @@ class BrowserAgent:
             except Exception as e:
                 logger.warning(f"Failed to load demo image {image_path}: {e}")
 
-        logger.info(f"Loaded {len(image_files)} demo images for prompt {prompt_number}")
+        logger.info(f"Loaded {len(image_files)} demo images")
 
         metadata = {
-            "description": readme_text,
+            "description": description_text,
             "thumbnail": thumbnail_base64,
-            "prompt_number": prompt_number,
             "image_count": len(image_files),
         }
 
         return parts, metadata
-
-    async def inject_context(self) -> dict | None:
-        """Manually inject demo context for the next prompt number.
-
-        Returns metadata about the injected content for UI display,
-        or None if no content was available.
-        """
-        if self.chat is None:
-            raise RuntimeError("Agent not initialized. Call initialize() first.")
-
-        self.user_message_count += 1
-        demo_parts, metadata = self._load_demo_content(self.user_message_count)
-
-        if demo_parts:
-            await self.chat.send_message_async(demo_parts)
-            logger.info(f"Manually injected demo content for prompt {self.user_message_count}")
-            return metadata
-
-        # No content available, decrement counter
-        self.user_message_count -= 1
-        return None
 
     def _build_system_prompt(self) -> str:
         """Build system prompt with available tools and their parameter schemas."""
@@ -430,7 +399,7 @@ class BrowserAgent:
             f"images={total_images})"
         )
 
-    async def process_message(self, user_message: str) -> str:
+    async def process_message(self, user_message: str) -> tuple[str, dict | None]:
         """Process a user message and return a response.
 
         Uses an agentic loop that continues executing tools until the LLM
@@ -439,11 +408,25 @@ class BrowserAgent:
         Only user_message fields from the structured response are returned
         to the user. Thinking is logged internally, and tool calls are
         executed silently.
+
+        Returns:
+            A tuple of (response_text, demo_metadata) where demo_metadata is
+            present only on the first message if demo content was injected.
         """
         if self.chat is None:
             raise RuntimeError("Agent not initialized. Call initialize() first.")
 
+        demo_metadata = None
+
         try:
+            # Inject demo content on first message
+            if not self.demo_injected:
+                self.demo_injected = True
+                demo_parts, demo_metadata = self._load_demo_content()
+                if demo_parts:
+                    await self.chat.send_message_async(demo_parts)
+                    logger.info("Injected demo content before first user message")
+
             # Send initial message to Gemini
             response = await self.chat.send_message_async(user_message)
             response_text = response.text
@@ -542,8 +525,8 @@ class BrowserAgent:
 
             # Return collected user messages (or a default if none)
             if user_messages:
-                return "\n\n".join(user_messages)
-            return "Task completed."
+                return "\n\n".join(user_messages), demo_metadata
+            return "Task completed.", demo_metadata
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")

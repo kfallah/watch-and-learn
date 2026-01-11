@@ -1,1 +1,0 @@
-Example of creating a table in google docs to format unstructured text.

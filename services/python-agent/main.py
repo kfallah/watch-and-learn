@@ -50,30 +50,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     "recording": is_recording
                 })
 
-            elif message.get("type") == "inject_context":
-                # Handle manual context injection
-                logger.info("Received inject_context request")
-                try:
-                    metadata = await agent.inject_context()
-                    if metadata:
-                        await websocket.send_json({
-                            "type": "context_injected",
-                            "metadata": metadata
-                        })
-                    else:
-                        await websocket.send_json({
-                            "type": "context_injected",
-                            "metadata": None,
-                            "error": "No more demo content available"
-                        })
-                except Exception as e:
-                    logger.error(f"Context injection error: {e}")
-                    await websocket.send_json({
-                        "type": "context_injected",
-                        "metadata": None,
-                        "error": str(e)
-                    })
-
             elif message.get("type") == "message":
                 user_content = message.get("content", "")
                 logger.info(f"Received message: {user_content}")
@@ -86,11 +62,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Process with agent
                 try:
-                    response = await agent.process_message(user_content)
-                    await websocket.send_json({
+                    response, demo_metadata = await agent.process_message(user_content)
+                    response_data: dict = {
                         "type": "response",
                         "content": response
-                    })
+                    }
+                    if demo_metadata:
+                        response_data["demo_metadata"] = demo_metadata
+                    await websocket.send_json(response_data)
                 except Exception as e:
                     logger.error(f"Agent error: {e}")
                     await websocket.send_json({
