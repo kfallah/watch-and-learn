@@ -38,6 +38,7 @@ export default function RecordingMetadataModal({
       // Reset form
       setDescription('')
       setShowCancelConfirm(false)
+      setIsSubmitting(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save metadata')
       setIsSubmitting(false)

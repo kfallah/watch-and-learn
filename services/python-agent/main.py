@@ -187,9 +187,7 @@ async def get_or_create_recording_agent() -> BrowserAgent:
     """Get or create the global recording agent with shared MCP client."""
     global recording_agent
 
-    if recording_agent_lock is None:
-        raise RuntimeError("Recording agent lock not initialized")
-
+    assert recording_agent_lock is not None, "recording_agent_lock not initialized"
     async with recording_agent_lock:
         if recording_agent is None:
             logger.info("Creating new recording agent")
