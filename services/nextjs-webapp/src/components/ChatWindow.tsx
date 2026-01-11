@@ -125,14 +125,9 @@ function renderMarkdownTable(content: string): React.ReactNode {
 }
 
 export default function ChatWindow({ isRecording = false, useOrchestrator = false }: ChatWindowProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: '1',
-      role: 'system',
-      content: 'Connected to AI agent. You can ask me to interact with the browser or ask questions about what you see.',
-      timestamp: new Date(),
-    },
-  ])
+  // Initialize with empty messages to avoid hydration mismatch
+  // The welcome message is added after mount via useEffect
+  const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isConnected, setIsConnected] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -248,8 +243,13 @@ export default function ChatWindow({ isRecording = false, useOrchestrator = fals
     }
   }, [connectWebSocket])
 
-  // Send recording state changes to backend
+  // Send recording state changes to backend (only for single-agent mode)
   useEffect(() => {
+    // Skip recording functionality in orchestrator mode
+    if (useOrchestrator) {
+      return
+    }
+
     const updateRecording = async () => {
       // Detect recording stopped (was true, now false)
       const wasRecording = prevIsRecordingRef.current
@@ -297,7 +297,7 @@ export default function ChatWindow({ isRecording = false, useOrchestrator = fals
     };
 
     updateRecording();
-  }, [isRecording, isConnected])
+  }, [isRecording, isConnected, useOrchestrator])
 
   const sendMessage = () => {
     if (!input.trim() || !isConnected || isLoading) return

@@ -20,6 +20,7 @@ services:
     environment:
       - MAX_WORKERS=5
       - COMPANIES_DATA_PATH=/app/data/companies.json
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - ./test_cases/competitor_analysis/data:/app/data:ro
       - ./logs/orchestrator:/app/logs
@@ -63,11 +64,11 @@ services:
     networks:
       - swarm-network
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "6080"]
-      interval: 10s
-      timeout: 5s
-      start_period: 15s
-      retries: 5
+      test: ["CMD", "nc", "-z", "localhost", "3001"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
 
   worker-1:
     build: ./services/python-agent
@@ -86,9 +87,9 @@ services:
       - swarm-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      start_period: 90s
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
       retries: 10
 
   # ==========================================================================
@@ -112,11 +113,11 @@ services:
     networks:
       - swarm-network
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "6080"]
-      interval: 10s
-      timeout: 5s
-      start_period: 15s
-      retries: 5
+      test: ["CMD", "nc", "-z", "localhost", "3001"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
 
   worker-2:
     build: ./services/python-agent
@@ -135,9 +136,9 @@ services:
       - swarm-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      start_period: 90s
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
       retries: 10
 
   # ==========================================================================
@@ -161,11 +162,11 @@ services:
     networks:
       - swarm-network
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "6080"]
-      interval: 10s
-      timeout: 5s
-      start_period: 15s
-      retries: 5
+      test: ["CMD", "nc", "-z", "localhost", "3001"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
 
   worker-3:
     build: ./services/python-agent
@@ -184,9 +185,9 @@ services:
       - swarm-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      start_period: 90s
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
       retries: 10
 
   # ==========================================================================
@@ -210,11 +211,11 @@ services:
     networks:
       - swarm-network
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "6080"]
-      interval: 10s
-      timeout: 5s
-      start_period: 15s
-      retries: 5
+      test: ["CMD", "nc", "-z", "localhost", "3001"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
 
   worker-4:
     build: ./services/python-agent
@@ -233,9 +234,9 @@ services:
       - swarm-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      start_period: 90s
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
       retries: 10
 
   # ==========================================================================
@@ -259,11 +260,11 @@ services:
     networks:
       - swarm-network
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "6080"]
-      interval: 10s
-      timeout: 5s
-      start_period: 15s
-      retries: 5
+      test: ["CMD", "nc", "-z", "localhost", "3001"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 10
 
   worker-5:
     build: ./services/python-agent
@@ -282,9 +283,9 @@ services:
       - swarm-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      start_period: 90s
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
       retries: 10
 
   # ==========================================================================

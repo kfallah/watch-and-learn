@@ -57,7 +57,7 @@ export default function SwarmHome() {
         const data = JSON.parse(event.data)
 
         // Update workers status when we receive updates
-        if (data.data?.workers) {
+        if (data.data?.workers && Array.isArray(data.data.workers)) {
           setWorkers(data.data.workers)
         }
 
