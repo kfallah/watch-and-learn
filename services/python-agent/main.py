@@ -50,6 +50,30 @@ async def websocket_endpoint(websocket: WebSocket):
                     "recording": is_recording
                 })
 
+            elif message.get("type") == "inject_context":
+                # Handle manual context injection
+                logger.info("Received inject_context request")
+                try:
+                    metadata = await agent.inject_context()
+                    if metadata:
+                        await websocket.send_json({
+                            "type": "context_injected",
+                            "metadata": metadata
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "context_injected",
+                            "metadata": None,
+                            "error": "No more demo content available"
+                        })
+                except Exception as e:
+                    logger.error(f"Context injection error: {e}")
+                    await websocket.send_json({
+                        "type": "context_injected",
+                        "metadata": None,
+                        "error": str(e)
+                    })
+
             elif message.get("type") == "message":
                 user_content = message.get("content", "")
                 logger.info(f"Received message: {user_content}")

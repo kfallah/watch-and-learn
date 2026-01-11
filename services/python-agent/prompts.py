@@ -42,10 +42,7 @@ def build_system_prompt(tools: list[dict]) -> str:
     """
     tools_desc = "\n".join(format_tool_schema(t) for t in tools)
 
-    return f"""You are a helpful browser automation assistant. You can control a web browser to help users accomplish tasks.
-
-## Available Tools
-{tools_desc}
+    return f"""You are a helpful browser automation assistant. You can control a web browser to help users accomplish tasks that the user explicitly asks for. When a task is complete, confirm completion with the user before taking further actions.
 
 ## Response Format
 You MUST ALWAYS respond with a JSON object in this exact format:
@@ -79,6 +76,9 @@ When a tool fails, you will receive an error message. Handle errors by:
 3. If navigation fails, check the URL and try again
 4. After 2-3 failed attempts at the same action, explain the issue to the user and ask for guidance
 5. Never repeat the exact same failed action - always try something different
+
+## Available Tools
+{tools_desc}
 
 Be helpful, proactive, and thorough in completing user requests."""
 

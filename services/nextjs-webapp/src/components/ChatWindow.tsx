@@ -4,9 +4,11 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 
 interface Message {
   id: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'memory'
   content: string
   timestamp: Date
+  thumbnail?: string
+  imageCount?: number
 }
 
 interface ChatWindowProps {
@@ -62,6 +64,22 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
             },
           ])
           setIsLoading(false)
+        } else if (data.type === 'context_injected') {
+          if (data.metadata) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: Date.now().toString(),
+                role: 'memory',
+                content: `Memory retrieved: ${data.metadata.description}`,
+                timestamp: new Date(),
+                thumbnail: data.metadata.thumbnail,
+                imageCount: data.metadata.image_count,
+              },
+            ])
+          } else {
+            console.log('No more demo content available:', data.error)
+          }
         } else if (data.type === 'status') {
           // Handle status updates (e.g., "thinking", "executing action")
           console.log('Status:', data.content)
@@ -135,6 +153,16 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
     }
   }
 
+  const injectContext = () => {
+    if (!isConnected) return
+
+    wsRef.current?.send(
+      JSON.stringify({
+        type: 'inject_context',
+      })
+    )
+  }
+
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
@@ -167,9 +195,25 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
                   ? 'bg-blue-600 text-white'
                   : message.role === 'system'
                   ? 'bg-gray-800 text-gray-300 text-sm italic'
+                  : message.role === 'memory'
+                  ? 'bg-purple-900 text-purple-100 border border-purple-700'
                   : 'bg-gray-700 text-white'
               }`}
             >
+              {message.role === 'memory' && message.thumbnail && (
+                <div className="mb-2">
+                  <img
+                    src={message.thumbnail}
+                    alt="Memory thumbnail"
+                    className="w-32 h-auto rounded border border-purple-600"
+                  />
+                  {message.imageCount && (
+                    <span className="text-xs text-purple-300 mt-1 block">
+                      +{message.imageCount - 1} more images
+                    </span>
+                  )}
+                </div>
+              )}
               <p className="whitespace-pre-wrap">{message.content}</p>
               <span className="text-xs opacity-50 mt-1 block">
                 {message.timestamp.toLocaleTimeString()}
@@ -200,6 +244,14 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
       {/* Input */}
       <div className="p-4 border-t border-gray-800 shrink-0">
         <div className="flex gap-2">
+          <button
+            onClick={injectContext}
+            disabled={!isConnected || isLoading}
+            className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-3 py-2 rounded-lg transition-colors text-sm"
+            title="Inject demo context"
+          >
+            + Memory
+          </button>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
