@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -31,6 +32,12 @@ MAX_RETRIES_PER_STEP = 3
 # Logs directory for dumping context
 LOGS_DIR = Path("/app/logs")
 
+# Demo directory for image demonstrations
+DEMO_DIR = Path(os.getenv("DEMO_DIR", "/app/demo"))
+
+# Whether to load demo content (disabled by default)
+DEMO_ENABLED = os.getenv("DEMO_ENABLED", "false").lower() in ("true", "1", "yes")
+
 
 class BrowserAgent:
     def __init__(self):
@@ -45,6 +52,7 @@ class BrowserAgent:
         self.conversation_history = []
         self.is_recording = False
         self.screenshot_counter = 0
+        self.demo_injected = False
         self.recording_session_id: str | None = None
 
     async def initialize(self):
@@ -58,7 +66,115 @@ class BrowserAgent:
             {"role": "user", "parts": [system_prompt]},
             {"role": "model", "parts": ["Understood. I'm ready to help you interact with the browser. What would you like me to do?"]}
         ]
+
         self.chat = self.model.start_chat(history=self.conversation_history)
+
+    def _load_demo_content(self) -> tuple[list | None, dict | None]:
+        """Load demo images and description from the demo folder.
+
+        Returns a tuple of:
+            - list of message parts (text + images) if demo content exists, or None
+            - dict with metadata (description, thumbnail_base64) for UI display, or None
+        """
+        if not DEMO_ENABLED:
+            logger.info("Demo content disabled via DEMO_ENABLED env var")
+            return None, None
+
+        if not DEMO_DIR.exists():
+            logger.info(f"Demo directory not found: {DEMO_DIR}")
+            return None, None
+
+        description_path = DEMO_DIR / "description.txt"
+        if not description_path.exists():
+            logger.info(f"Demo description not found: {description_path}")
+            return None, None
+
+        # Read the description
+        description_text = description_path.read_text().strip()
+
+        # Find all image files, sorted by name (ignore prompt.txt)
+        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        image_files = sorted(
+            f for f in DEMO_DIR.iterdir()
+            if f.suffix.lower() in image_extensions
+        )
+
+        if not image_files:
+            logger.info(f"No demo images found in {DEMO_DIR}")
+            return None, None
+
+        # Build the message parts
+        parts: list[str | genai.protos.Part] = []
+
+        # Add introductory text with description
+        intro_text = (
+            "Here is a demonstration of how to complete a similar task. "
+            "Use these images as a reference for how to interact with the browser.\n\n"
+            f"Task description: {description_text}\n\n"
+            "The following images show the step-by-step process:"
+        )
+        parts.append(intro_text)
+
+        # Track first image for thumbnail
+        thumbnail_base64 = None
+
+        # Add each image
+        for i, image_path in enumerate(image_files):
+            try:
+                image_data = image_path.read_bytes()
+                # Determine mime type
+                suffix = image_path.suffix.lower()
+                mime_type = {
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".gif": "image/gif",
+                    ".webp": "image/webp",
+                }.get(suffix, "image/png")
+
+                image_part = genai.protos.Part(
+                    inline_data={"mime_type": mime_type, "data": image_data}
+                )
+                parts.append(image_part)
+                logger.info(f"Loaded demo image: {image_path.name} ({len(image_data)} bytes)")
+
+                # Use first image as thumbnail
+                if i == 0:
+                    thumbnail_base64 = f"data:{mime_type};base64,{base64.b64encode(image_data).decode()}"
+            except Exception as e:
+                logger.warning(f"Failed to load demo image {image_path}: {e}")
+
+        logger.info(f"Loaded {len(image_files)} demo images")
+
+        metadata = {
+            "description": description_text,
+            "thumbnail": thumbnail_base64,
+            "image_count": len(image_files),
+        }
+
+        return parts, metadata
+
+    async def inject_demo_content(self) -> dict | None:
+        """Inject demo content into the conversation.
+
+        Should be called before the first user message.
+        Returns metadata for UI display, or None if no demo available.
+        """
+        if self.chat is None:
+            raise RuntimeError("Agent not initialized. Call initialize() first.")
+
+        if self.demo_injected:
+            return None
+
+        self.demo_injected = True
+        demo_parts, metadata = self._load_demo_content()
+
+        if demo_parts:
+            await self.chat.send_message_async(demo_parts)
+            logger.info("Injected demo content into conversation")
+            return metadata
+
+        return None
 
     def _build_system_prompt(self) -> str:
         """Build system prompt with available tools and their parameter schemas."""

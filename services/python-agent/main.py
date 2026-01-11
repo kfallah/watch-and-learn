@@ -110,6 +110,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 user_content = message.get("content", "")
                 logger.info(f"Received message: {user_content}")
 
+                # Check if we should inject demo content (first message only)
+                demo_metadata = None
+                if not agent.demo_injected:
+                    demo_metadata = await agent.inject_demo_content()
+                    if demo_metadata:
+                        # Send memory message immediately
+                        await websocket.send_json({
+                            "type": "memory_injected",
+                            "metadata": demo_metadata
+                        })
+                        logger.info("Sent memory_injected message to client")
+
                 # Send status update
                 await websocket.send_json({
                     "type": "status",
