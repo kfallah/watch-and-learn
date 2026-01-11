@@ -4,6 +4,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import aiohttp
@@ -14,6 +15,9 @@ from pydantic import ValidationError
 from mcp_client import MCPClient, MCPToolResult
 from models import AgentResponse
 from prompts import TOOL_RESULT_REMINDER, TOOL_RESULT_REMINDER_WITH_IMAGE, build_system_prompt
+
+if TYPE_CHECKING:
+    from rag_retriever import RAGRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +53,7 @@ class BrowserAgent:
         self.model = genai.GenerativeModel("gemini-2.0-flash")
         self.chat = None
         self.mcp_client: MCPClient | None = None
+        self.rag_retriever: RAGRetriever | None = None
         self.conversation_history = []
         self.is_recording = False
         self.screenshot_counter = 0
@@ -374,6 +379,66 @@ class BrowserAgent:
 
         return parts
 
+    def _build_rag_context(self, query: str) -> list | None:
+        """Build RAG context with relevant recordings and their images.
+
+        Args:
+            query: The user's message/task to find relevant recordings for.
+
+        Returns:
+            List of message parts with context, or None if no relevant recordings.
+        """
+        if not self.rag_retriever:
+            return None
+
+        try:
+            results = self.rag_retriever.retrieve_with_images(query)
+            if not results:
+                logger.info("No relevant recordings found for RAG context")
+                return None
+
+            parts: list[str | GenaiPart] = []
+
+            # Add context header
+            parts.append(
+                "I found some relevant recordings from previous teaching sessions "
+                "that may help with this task. Here are examples of similar tasks "
+                "that were demonstrated before:\n"
+            )
+
+            for i, result in enumerate(results, 1):
+                recording = result["recording"]
+                score = result["relevance_score"]
+                images = result["images"]
+
+                parts.append(
+                    f"\n--- Recording {i} (relevance: {score:.2f}) ---\n"
+                    f"Description: {recording.description}\n"
+                    f"Screenshots ({len(images)} images):\n"
+                )
+
+                # Add images
+                for img_bytes, mime_type in images:
+                    image_part = genai.protos.Part(
+                        inline_data={"mime_type": mime_type, "data": img_bytes}
+                    )
+                    parts.append(image_part)
+
+            parts.append(
+                "\n--- End of recordings ---\n"
+                "Use these examples as reference for how to approach the current task.\n"
+            )
+
+            logger.info(
+                f"Built RAG context with {len(results)} recordings, "
+                f"{sum(len(r['images']) for r in results)} total images"
+            )
+            return parts
+
+        except Exception as e:
+            logger.error(f"Failed to build RAG context: {e}")
+            return None
+
     def _dump_context(self, trigger: str) -> None:
         """Dump the current chat context to a JSON file for debugging.
 
@@ -467,8 +532,19 @@ class BrowserAgent:
             raise RuntimeError("Agent not initialized. Call initialize() first.")
 
         try:
+            # Build RAG context if available
+            rag_context = self._build_rag_context(user_message)
+
+            # Build the message parts
+            if rag_context:
+                # Multimodal message with RAG context + user message
+                message_parts = rag_context + [f"\nUser request: {user_message}"]
+                logger.info("Sending message with RAG context")
+            else:
+                message_parts = user_message
+
             # Send initial message to Gemini
-            response = await self.chat.send_message_async(user_message)
+            response = await self.chat.send_message_async(message_parts)
             response_text = response.text
 
             # Collect user messages to return at the end
