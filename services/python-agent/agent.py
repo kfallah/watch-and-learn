@@ -1,22 +1,34 @@
+import asyncio
+import base64
 import json
 import logging
 import os
+import random
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import aiohttp
 import google.generativeai as genai
 from google.ai.generativelanguage_v1beta.types.content import Part as GenaiPart
+from google.api_core import exceptions as google_exceptions
 from pydantic import ValidationError
 
 from mcp_client import MCPClient, MCPToolResult
 from models import AgentResponse
 from prompts import TOOL_RESULT_REMINDER, TOOL_RESULT_REMINDER_WITH_IMAGE, build_system_prompt
 
+if TYPE_CHECKING:
+    from rag_retriever import RAGRetriever
+
 logger = logging.getLogger(__name__)
 
 # MCP Server URL
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://playwright-browser:3001")
+
+# Video Buffer Server URL (for historical frame queries)
+VIDEO_BUFFER_URL = os.getenv("VIDEO_BUFFER_URL", "http://playwright-browser:8766")
 
 # Maximum iterations for the agentic loop to prevent infinite loops
 MAX_ITERATIONS = 30
@@ -24,8 +36,20 @@ MAX_ITERATIONS = 30
 # Maximum consecutive failures per step before asking user for guidance
 MAX_RETRIES_PER_STEP = 3
 
+# Exponential backoff settings for API rate limiting (429 errors)
+API_MAX_RETRIES = 5
+API_BASE_DELAY = 1.0  # Base delay in seconds
+API_MAX_DELAY = 60.0  # Maximum delay in seconds
+API_EXPONENTIAL_BASE = 2  # Exponential backoff multiplier
+
 # Logs directory for dumping context
 LOGS_DIR = Path("/app/logs")
+
+# Demo directory for image demonstrations
+DEMO_DIR = Path(os.getenv("DEMO_DIR", "/app/demo"))
+
+# Whether to load demo content (disabled by default)
+DEMO_ENABLED = os.getenv("DEMO_ENABLED", "false").lower() in ("true", "1", "yes")
 
 
 class BrowserAgent:
@@ -38,10 +62,56 @@ class BrowserAgent:
         self.model = genai.GenerativeModel("gemini-2.0-flash")
         self.chat = None
         self.mcp_client: MCPClient | None = None
+        self.rag_retriever: RAGRetriever | None = None
         self.conversation_history = []
         self.is_recording = False
         self.screenshot_counter = 0
+        self.demo_injected = False
         self.recording_session_id: str | None = None
+
+    async def _send_message_with_retry(self, message) -> str:
+        """Send a message to Gemini with exponential backoff for rate limiting.
+
+        Args:
+            message: The message to send (string or list of parts).
+
+        Returns:
+            The response text from Gemini.
+
+        Raises:
+            Exception: If all retries are exhausted.
+        """
+        last_exception = None
+
+        for attempt in range(API_MAX_RETRIES):
+            try:
+                response = await self.chat.send_message_async(message)
+                return response.text
+            except google_exceptions.ResourceExhausted as e:
+                last_exception = e
+                if attempt < API_MAX_RETRIES - 1:
+                    # Calculate delay with exponential backoff and jitter
+                    delay = min(
+                        API_BASE_DELAY * (API_EXPONENTIAL_BASE ** attempt),
+                        API_MAX_DELAY
+                    )
+                    # Add jitter (±25%)
+                    jitter = delay * 0.25 * (2 * random.random() - 1)
+                    delay = delay + jitter
+
+                    logger.warning(
+                        f"Rate limited (429). Retrying in {delay:.1f}s "
+                        f"(attempt {attempt + 1}/{API_MAX_RETRIES})"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Rate limit retries exhausted after {API_MAX_RETRIES} attempts")
+            except Exception:
+                # For non-rate-limit errors, don't retry
+                raise
+
+        # All retries exhausted
+        raise last_exception or Exception("Rate limit retries exhausted")
 
     async def initialize(self):
         """Initialize the agent and connect to MCP server."""
@@ -54,7 +124,115 @@ class BrowserAgent:
             {"role": "user", "parts": [system_prompt]},
             {"role": "model", "parts": ["Understood. I'm ready to help you interact with the browser. What would you like me to do?"]}
         ]
+
         self.chat = self.model.start_chat(history=self.conversation_history)
+
+    def _load_demo_content(self) -> tuple[list | None, dict | None]:
+        """Load demo images and description from the demo folder.
+
+        Returns a tuple of:
+            - list of message parts (text + images) if demo content exists, or None
+            - dict with metadata (description, thumbnail_base64) for UI display, or None
+        """
+        if not DEMO_ENABLED:
+            logger.info("Demo content disabled via DEMO_ENABLED env var")
+            return None, None
+
+        if not DEMO_DIR.exists():
+            logger.info(f"Demo directory not found: {DEMO_DIR}")
+            return None, None
+
+        description_path = DEMO_DIR / "description.txt"
+        if not description_path.exists():
+            logger.info(f"Demo description not found: {description_path}")
+            return None, None
+
+        # Read the description
+        description_text = description_path.read_text().strip()
+
+        # Find all image files, sorted by name (ignore prompt.txt)
+        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        image_files = sorted(
+            f for f in DEMO_DIR.iterdir()
+            if f.suffix.lower() in image_extensions
+        )
+
+        if not image_files:
+            logger.info(f"No demo images found in {DEMO_DIR}")
+            return None, None
+
+        # Build the message parts
+        parts: list[str | genai.protos.Part] = []
+
+        # Add introductory text with description
+        intro_text = (
+            "Here is a demonstration of how to complete a similar task. "
+            "Use these images as a reference for how to interact with the browser.\n\n"
+            f"Task description: {description_text}\n\n"
+            "The following images show the step-by-step process:"
+        )
+        parts.append(intro_text)
+
+        # Track first image for thumbnail
+        thumbnail_base64 = None
+
+        # Add each image
+        for i, image_path in enumerate(image_files):
+            try:
+                image_data = image_path.read_bytes()
+                # Determine mime type
+                suffix = image_path.suffix.lower()
+                mime_type = {
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".gif": "image/gif",
+                    ".webp": "image/webp",
+                }.get(suffix, "image/png")
+
+                image_part = genai.protos.Part(
+                    inline_data={"mime_type": mime_type, "data": image_data}
+                )
+                parts.append(image_part)
+                logger.info(f"Loaded demo image: {image_path.name} ({len(image_data)} bytes)")
+
+                # Use first image as thumbnail
+                if i == 0:
+                    thumbnail_base64 = f"data:{mime_type};base64,{base64.b64encode(image_data).decode()}"
+            except Exception as e:
+                logger.warning(f"Failed to load demo image {image_path}: {e}")
+
+        logger.info(f"Loaded {len(image_files)} demo images")
+
+        metadata = {
+            "description": description_text,
+            "thumbnail": thumbnail_base64,
+            "image_count": len(image_files),
+        }
+
+        return parts, metadata
+
+    async def inject_demo_content(self) -> dict | None:
+        """Inject demo content into the conversation.
+
+        Should be called before the first user message.
+        Returns metadata for UI display, or None if no demo available.
+        """
+        if self.chat is None:
+            raise RuntimeError("Agent not initialized. Call initialize() first.")
+
+        if self.demo_injected:
+            return None
+
+        self.demo_injected = True
+        demo_parts, metadata = self._load_demo_content()
+
+        if demo_parts:
+            await self._send_message_with_retry(demo_parts)
+            logger.info("Injected demo content into conversation")
+            return metadata
+
+        return None
 
     def _build_system_prompt(self) -> str:
         """Build system prompt with available tools and their parameter schemas."""
@@ -77,40 +255,53 @@ class BrowserAgent:
             logger.info(f"Recording mode disabled - Session ID: {self.recording_session_id}")
             self.recording_session_id = None
 
-    async def _capture_screenshot(self, event_type: str) -> str | None:
-        """Capture a screenshot and save it locally."""
-        if not self.mcp_client:
-            logger.error("Cannot capture screenshot: MCP client not initialized")
-            return None
+    async def _capture_screenshot(self, event_type: str, offset_ms: int = 100) -> str | None:
+        """Capture a screenshot from video buffer and save it locally.
 
+        Args:
+            event_type: Description of the event (e.g., "before_browser_click")
+            offset_ms: How many milliseconds in the past to retrieve frame (default: 100)
+
+        Returns:
+            Path to saved screenshot file, or None if failed
+        """
         try:
-            # Use browser_take_screenshot tool to capture the screen
-            logger.debug(f"Calling browser_take_screenshot for event: {event_type}")
-            result = await self.mcp_client.call_tool("browser_take_screenshot", {})
+            # Query video buffer for historical frame
+            url = f"{VIDEO_BUFFER_URL}/frame?offset_ms={offset_ms}"
+            logger.debug(f"Requesting frame from video buffer: {url} (event: {event_type})")
 
-            # Check for errors in result
-            if result.error:
-                logger.error(f"Screenshot capture failed: {result.error}")
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status == 404:
+                        logger.warning(f"No frame available in buffer for offset {offset_ms}ms")
+                        return None
+                    elif response.status != 200:
+                        logger.error(f"Frame request failed with status {response.status}: {await response.text()}")
+                        return None
+
+                    # Read JPEG data
+                    frame_data = await response.read()
+
+            if not frame_data:
+                logger.warning(f"Empty frame data received for event: {event_type}")
                 return None
 
-            # Save the screenshot if it has images
-            if result.has_images():
-                self.screenshot_counter += 1
+            # Save screenshot to file
+            self.screenshot_counter += 1
 
-                # Include session ID in filename
-                session_part = f"{self.recording_session_id}_" if self.recording_session_id else ""
-                filename = f"/tmp/screenshots/{session_part}{self.screenshot_counter:04d}_{event_type}.png"
+            # Include session ID in filename
+            session_part = f"{self.recording_session_id}_" if self.recording_session_id else ""
+            filename = f"/tmp/screenshots/{session_part}{self.screenshot_counter:04d}_{event_type}.jpg"
 
-                # Save the first image
-                with open(filename, "wb") as f:
-                    f.write(result.images[0].data)
+            with open(filename, "wb") as f:
+                f.write(frame_data)
 
-                logger.info(f"Screenshot captured successfully: {filename} (event: {event_type})")
-                return filename
-            else:
-                logger.warning(f"No image data in screenshot result for event: {event_type}")
-                return None
+            logger.info(f"Screenshot captured from buffer: {filename} (event: {event_type}, offset: {offset_ms}ms)")
+            return filename
 
+        except TimeoutError:
+            logger.error(f"Timeout while requesting frame from video buffer for event: {event_type}")
+            return None
         except Exception as e:
             logger.error(f"Exception while capturing screenshot: {e}", exc_info=True)
             return None
@@ -121,15 +312,11 @@ class BrowserAgent:
             return MCPToolResult(error="MCP client not connected")
 
         try:
-            # Capture screenshot before action if recording
+            # Capture screenshot before action if recording (from 100ms ago buffer)
             if self.is_recording and tool_name in ["browser_click", "browser_type"]:
-                await self._capture_screenshot(f"before_{tool_name}")
+                await self._capture_screenshot(f"before_{tool_name}", offset_ms=100)
 
             result = await self.mcp_client.call_tool(tool_name, arguments)
-
-            # Capture screenshot after action if recording
-            if self.is_recording and tool_name in ["browser_click", "browser_type"]:
-                await self._capture_screenshot(f"after_{tool_name}")
 
             return result
         except Exception as e:
@@ -245,6 +432,66 @@ class BrowserAgent:
 
         return parts
 
+    def _build_rag_context(self, query: str) -> list | None:
+        """Build RAG context with relevant recordings and their images.
+
+        Args:
+            query: The user's message/task to find relevant recordings for.
+
+        Returns:
+            List of message parts with context, or None if no relevant recordings.
+        """
+        if not self.rag_retriever:
+            return None
+
+        try:
+            results = self.rag_retriever.retrieve_with_images(query)
+            if not results:
+                logger.info("No relevant recordings found for RAG context")
+                return None
+
+            parts: list[str | GenaiPart] = []
+
+            # Add context header
+            parts.append(
+                "I found some relevant recordings from previous teaching sessions "
+                "that may help with this task. Here are examples of similar tasks "
+                "that were demonstrated before:\n"
+            )
+
+            for i, result in enumerate(results, 1):
+                recording = result["recording"]
+                score = result["relevance_score"]
+                images = result["images"]
+
+                parts.append(
+                    f"\n--- Recording {i} (relevance: {score:.2f}) ---\n"
+                    f"Description: {recording.description}\n"
+                    f"Screenshots ({len(images)} images):\n"
+                )
+
+                # Add images
+                for img_bytes, mime_type in images:
+                    image_part = genai.protos.Part(
+                        inline_data={"mime_type": mime_type, "data": img_bytes}
+                    )
+                    parts.append(image_part)
+
+            parts.append(
+                "\n--- End of recordings ---\n"
+                "Use these examples as reference for how to approach the current task.\n"
+            )
+
+            logger.info(
+                f"Built RAG context with {len(results)} recordings, "
+                f"{sum(len(r['images']) for r in results)} total images"
+            )
+            return parts
+
+        except Exception as e:
+            logger.error(f"Failed to build RAG context: {e}")
+            return None
+
     def _dump_context(self, trigger: str) -> None:
         """Dump the current chat context to a JSON file for debugging.
 
@@ -338,9 +585,19 @@ class BrowserAgent:
             raise RuntimeError("Agent not initialized. Call initialize() first.")
 
         try:
-            # Send initial message to Gemini
-            response = await self.chat.send_message_async(user_message)
-            response_text = response.text
+            # Build RAG context if available
+            rag_context = self._build_rag_context(user_message)
+
+            # Build the message parts
+            if rag_context:
+                # Multimodal message with RAG context + user message
+                message_parts = rag_context + [f"\nUser request: {user_message}"]
+                logger.info("Sending message with RAG context")
+            else:
+                message_parts = user_message
+
+            # Send initial message to Gemini (with retry for rate limiting)
+            response_text = await self._send_message_with_retry(message_parts)
 
             # Collect user messages to return at the end
             user_messages: list[str] = []
@@ -414,9 +671,8 @@ class BrowserAgent:
                 # Build multimodal message with tool result (includes errors)
                 follow_up_parts = self._build_tool_result_message(tool_name, result)
 
-                # Send result to Gemini and get next response
-                response = await self.chat.send_message_async(follow_up_parts)
-                response_text = response.text
+                # Send result to Gemini and get next response (with retry for rate limiting)
+                response_text = await self._send_message_with_retry(follow_up_parts)
 
                 # Dump context after each tool execution for debugging
                 self._dump_context(f"after_tool_{tool_name}_iter{iterations}")

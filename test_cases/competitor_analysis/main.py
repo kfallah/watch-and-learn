@@ -92,7 +92,7 @@ def main():
             print("PIPELINE COMPLETE")
             print("=" * 60)
             print(f"\n✓ Extracted {len(companies)} YC Winter 2025 companies")
-            print(f"✓ Data saved to: data/companies.json")
+            print("✓ Data saved to: data/companies.json")
 
             # Preview
             print("\n--- Top 5 Companies ---")

@@ -2,8 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies including curl for health checks
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# Install system dependencies for SSL/TLS and MongoDB Atlas
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
 
 # Install dependencies
 COPY requirements.txt .

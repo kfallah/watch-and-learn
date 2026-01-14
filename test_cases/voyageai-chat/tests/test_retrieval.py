@@ -1,7 +1,5 @@
 """Tests for retrieval accuracy and speed."""
 
-import json
-import time
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +7,7 @@ import pytest
 from sklearn.metrics.pairwise import cosine_similarity
 
 from src.config import Config
-from src.document_loader import load_documents, DocumentSet
+from src.document_loader import load_documents
 from src.voyage_client import VoyageClient
 from src.retriever import Retriever
 
