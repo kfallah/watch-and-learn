@@ -85,8 +85,20 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
             ])
           }
         } else if (data.type === 'status') {
-          // Handle status updates (e.g., "thinking", "executing action")
+          // Handle status updates (e.g., "thinking", "executing action", "interrupt_received")
           console.log('Status:', data.content)
+          if (data.content === 'interrupt_received') {
+            // Show a system message that the interrupt was received
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: Date.now().toString() + '-interrupt',
+                role: 'system',
+                content: 'Interrupt received - will be applied at next iteration',
+                timestamp: new Date(),
+              },
+            ])
+          }
         } else if (data.type === 'recording_status') {
           // Handle recording status updates
           if (data.session_id) {
@@ -175,7 +187,7 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
   }, [isRecording, isConnected])
 
   const sendMessage = () => {
-    if (!input.trim() || !isConnected || isLoading) return
+    if (!input.trim() || !isConnected) return
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -185,14 +197,24 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
     }
 
     setMessages((prev) => [...prev, userMessage])
-    setIsLoading(true)
 
-    wsRef.current?.send(
-      JSON.stringify({
-        type: 'message',
-        content: input.trim(),
-      })
-    )
+    // If already loading, send as interrupt; otherwise send as new message
+    if (isLoading) {
+      wsRef.current?.send(
+        JSON.stringify({
+          type: 'interrupt',
+          content: input.trim(),
+        })
+      )
+    } else {
+      setIsLoading(true)
+      wsRef.current?.send(
+        JSON.stringify({
+          type: 'message',
+          content: input.trim(),
+        })
+      )
+    }
 
     setInput('')
   }
@@ -356,7 +378,7 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
           />
           <button
             onClick={sendMessage}
-            disabled={!isConnected || !input.trim() || isLoading}
+            disabled={!isConnected || !input.trim()}
             className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
           >
             Send

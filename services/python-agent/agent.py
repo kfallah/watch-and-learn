@@ -55,7 +55,7 @@ class BrowserAgent:
             raise ValueError("GEMINI_API_KEY environment variable is required")
 
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel("gemini-3-flash-pro")
+        self.model = genai.GenerativeModel("gemini-3-pro-preview")
         self.chat = None
         self.mcp_client: MCPClient | None = None
         self.conversation_history = []
@@ -63,6 +63,9 @@ class BrowserAgent:
         self.screenshot_counter = 0
         self.demo_injected = False
         self.recording_session_id: str | None = None
+        # Interrupt mechanism for injecting context mid-execution
+        self.interrupt_queue: asyncio.Queue[str] = asyncio.Queue()
+        self.is_interrupted = False
 
     async def initialize(self):
         """Initialize the agent and connect to MCP server."""
@@ -189,6 +192,33 @@ class BrowserAgent:
         """Build system prompt with available tools and their parameter schemas."""
         tools = self.mcp_client.get_tools_for_llm() if self.mcp_client else []
         return build_system_prompt(tools)
+
+    async def interrupt(self, context: str | None = None) -> None:
+        """Signal the agent to pause and optionally inject context.
+
+        Args:
+            context: Optional text context to inject into the conversation.
+                    The agent will incorporate this at the next iteration.
+        """
+        self.is_interrupted = True
+        if context:
+            await self.interrupt_queue.put(context)
+        logger.info(f"Interrupt signal received (with context: {context is not None})")
+
+    async def _check_interrupt(self) -> str | None:
+        """Check if interrupted and return any pending context.
+
+        Returns:
+            The interrupt context string if available, None otherwise.
+        """
+        if not self.is_interrupted:
+            return None
+
+        try:
+            context = self.interrupt_queue.get_nowait()
+            return context
+        except asyncio.QueueEmpty:
+            return None
 
     async def _send_message_with_retry(self, message: Any) -> Any:
         """Send a message to Gemini with exponential backoff retry on rate limits.
@@ -593,6 +623,13 @@ class BrowserAgent:
 
                 # Build multimodal message with tool result (includes errors)
                 follow_up_parts = self._build_tool_result_message(tool_name, result)
+
+                # Check for user interrupt with additional context
+                interrupt_context = await self._check_interrupt()
+                if interrupt_context is not None:
+                    logger.info(f"Injecting interrupt context: {interrupt_context[:100]}...")
+                    follow_up_parts.append(f"\n\n[USER INTERRUPT - Additional context from user]: {interrupt_context}")
+                    self.is_interrupted = False  # Reset for next iteration
 
                 # Send result to Gemini and get next response
                 response = await self._send_message_with_retry(follow_up_parts)

@@ -71,6 +71,43 @@ async def get_shared_mcp_client() -> MCPClient:
     return shared_mcp_client
 
 
+async def _process_and_respond(
+    agent: BrowserAgent,
+    websocket: WebSocket,
+    user_content: str
+) -> None:
+    """Process a message and send the response. Runs as a background task."""
+    try:
+        # Check if we should inject demo content (first message only)
+        if not agent.demo_injected:
+            demo_metadata = await agent.inject_demo_content()
+            if demo_metadata:
+                await websocket.send_json({
+                    "type": "memory_injected",
+                    "metadata": demo_metadata
+                })
+                logger.info("Sent memory_injected message to client")
+
+        # Send status update
+        await websocket.send_json({
+            "type": "status",
+            "content": "thinking"
+        })
+
+        # Process with agent
+        response = await agent.process_message(user_content)
+        await websocket.send_json({
+            "type": "response",
+            "content": response
+        })
+    except Exception as e:
+        logger.error(f"Agent error: {e}")
+        await websocket.send_json({
+            "type": "response",
+            "content": f"Sorry, I encountered an error: {str(e)}"
+        })
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -90,6 +127,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
     logger.info(f"Client connected: {connection_id}")
 
+    # Track the current processing task
+    processing_task: asyncio.Task | None = None
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -106,47 +146,49 @@ async def websocket_endpoint(websocket: WebSocket):
                     "session_id": agent.recording_session_id
                 })
 
+            elif message.get("type") == "interrupt":
+                # User wants to interrupt with additional context
+                context = message.get("content", "")
+                if processing_task and not processing_task.done():
+                    await agent.interrupt(context)
+                    await websocket.send_json({
+                        "type": "status",
+                        "content": "interrupt_received"
+                    })
+                    logger.info(f"Interrupt queued with context: {context[:50]}...")
+                else:
+                    logger.warning("Interrupt received but no active processing task")
+                    await websocket.send_json({
+                        "type": "status",
+                        "content": "no_active_task"
+                    })
+
             elif message.get("type") == "message":
                 user_content = message.get("content", "")
                 logger.info(f"Received message: {user_content}")
 
-                # Check if we should inject demo content (first message only)
-                demo_metadata = None
-                if not agent.demo_injected:
-                    demo_metadata = await agent.inject_demo_content()
-                    if demo_metadata:
-                        # Send memory message immediately
-                        await websocket.send_json({
-                            "type": "memory_injected",
-                            "metadata": demo_metadata
-                        })
-                        logger.info("Sent memory_injected message to client")
-
-                # Send status update
-                await websocket.send_json({
-                    "type": "status",
-                    "content": "thinking"
-                })
-
-                # Process with agent
-                try:
-                    response = await agent.process_message(user_content)
+                # Check if already processing - treat as interrupt
+                if processing_task and not processing_task.done():
+                    await agent.interrupt(user_content)
                     await websocket.send_json({
-                        "type": "response",
-                        "content": response
+                        "type": "status",
+                        "content": "interrupt_received"
                     })
-                except Exception as e:
-                    logger.error(f"Agent error: {e}")
-                    await websocket.send_json({
-                        "type": "response",
-                        "content": f"Sorry, I encountered an error: {str(e)}"
-                    })
+                    logger.info(f"Message queued as interrupt: {user_content[:50]}...")
+                else:
+                    # Start new processing task
+                    processing_task = asyncio.create_task(
+                        _process_and_respond(agent, websocket, user_content)
+                    )
 
     except WebSocketDisconnect:
         logger.info(f"Client disconnected: {connection_id}")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
+        # Cancel any running task
+        if processing_task and not processing_task.done():
+            processing_task.cancel()
         # Cleanup - don't disconnect shared MCP client
         if connection_id in active_connections:
             del active_connections[connection_id]
