@@ -12,11 +12,36 @@ interface Message {
   imageCount?: number
 }
 
-interface ChatWindowProps {
-  isRecording?: boolean
+// James code
+interface SwarmStatus {
+  plan: {
+    task_type: string
+    target_count: number
+    original_prompt: string
+  } | null
+  claimed_items: string[]
+  agents: Record<string, {
+    status: string
+    claimed_item: string | null
+    has_result: boolean
+  }>
 }
 
-export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
+interface ChatWindowProps {
+  isRecording?: boolean
+  // James code
+  onSwarmStart?: () => void
+  onSwarmEnd?: () => void
+  onSwarmStatusUpdate?: (status: SwarmStatus) => void
+}
+
+export default function ChatWindow({
+  isRecording = false,
+  // James code
+  onSwarmStart,
+  onSwarmEnd,
+  onSwarmStatusUpdate,
+}: ChatWindowProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
@@ -31,8 +56,13 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [showMetadataModal, setShowMetadataModal] = useState(false)
   const [pendingSessionId, setPendingSessionId] = useState<string | null>(null)
+  // James code
+  const [isSwarmMode, setIsSwarmMode] = useState(false)
+  const [isSwarmLoading, setIsSwarmLoading] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  // James code
+  const swarmWsRef = useRef<WebSocket | null>(null)
   const prevIsRecordingRef = useRef<boolean>(false)
 
   const scrollToBottom = () => {
@@ -123,6 +153,13 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
     }
   }, [connectWebSocket])
 
+  // James code
+  useEffect(() => {
+    return () => {
+      swarmWsRef.current?.close()
+    }
+  }, [])
+
   // Send recording state changes to backend
   useEffect(() => {
     const updateRecording = async () => {
@@ -174,8 +211,119 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
     updateRecording();
   }, [isRecording, isConnected])
 
+  // James code
+  const connectSwarmWebSocket = useCallback(() => {
+    const wsUrl = typeof window !== 'undefined'
+      ? `ws://${window.location.hostname}:8000/swarm/ws`
+      : 'ws://localhost:8000/swarm/ws'
+
+    const ws = new WebSocket(wsUrl)
+
+    ws.onopen = () => {
+      console.log('Connected to swarm orchestrator')
+    }
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+
+        if (data.type === 'swarm_status') {
+          onSwarmStatusUpdate?.(data.status)
+        } else if (data.type === 'swarm_started') {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: 'system',
+              content: `Swarm started: "${data.prompt}"`,
+              timestamp: new Date(),
+            },
+          ])
+        } else if (data.type === 'swarm_complete') {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: data.result,
+              timestamp: new Date(),
+            },
+          ])
+          setIsSwarmLoading(false)
+          setIsSwarmMode(false)
+          onSwarmEnd?.()
+        } else if (data.type === 'swarm_error') {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: 'system',
+              content: `Swarm error: ${data.error}`,
+              timestamp: new Date(),
+            },
+          ])
+          setIsSwarmLoading(false)
+          setIsSwarmMode(false)
+          onSwarmEnd?.()
+        }
+      } catch (e) {
+        console.error('Failed to parse swarm message:', e)
+      }
+    }
+
+    ws.onclose = () => {
+      console.log('Disconnected from swarm orchestrator')
+    }
+
+    ws.onerror = (error) => {
+      console.error('Swarm WebSocket error:', error)
+    }
+
+    swarmWsRef.current = ws
+  }, [onSwarmStatusUpdate, onSwarmEnd])
+
+  // James code
+  const sendSwarm = () => {
+    if (!input.trim() || isLoading || isSwarmLoading) return
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: `[SWARM] ${input.trim()}`,
+      timestamp: new Date(),
+    }
+
+    setMessages((prev) => [...prev, userMessage])
+    setIsSwarmLoading(true)
+    setIsSwarmMode(true)
+    onSwarmStart?.()
+
+    // Connect to swarm WebSocket if not connected
+    if (!swarmWsRef.current || swarmWsRef.current.readyState !== WebSocket.OPEN) {
+      connectSwarmWebSocket()
+      // Wait for connection then send
+      setTimeout(() => {
+        swarmWsRef.current?.send(
+          JSON.stringify({
+            type: 'execute',
+            prompt: input.trim(),
+          })
+        )
+      }, 500)
+    } else {
+      swarmWsRef.current.send(
+        JSON.stringify({
+          type: 'execute',
+          prompt: input.trim(),
+        })
+      )
+    }
+
+    setInput('')
+  }
+
   const sendMessage = () => {
-    if (!input.trim() || !isConnected || isLoading) return
+    if (!input.trim() || !isConnected || isLoading || isSwarmLoading) return
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -352,16 +500,31 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
             placeholder="Ask the agent to do something..."
             className="flex-1 bg-gray-800 text-white rounded-lg px-4 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
             rows={1}
-            disabled={!isConnected}
+            disabled={!isConnected || isSwarmLoading}
           />
           <button
             onClick={sendMessage}
-            disabled={!isConnected || !input.trim() || isLoading}
+            disabled={!isConnected || !input.trim() || isLoading || isSwarmLoading}
             className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
           >
             Send
           </button>
+          {/* James code */}
+          <button
+            onClick={sendSwarm}
+            disabled={!isConnected || !input.trim() || isLoading || isSwarmLoading}
+            className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+            title="Execute with multiple browser agents in parallel"
+          >
+            {isSwarmLoading ? 'Swarming...' : 'Swarm'}
+          </button>
         </div>
+        {/* James code */}
+        {isSwarmMode && (
+          <div className="mt-2 text-xs text-purple-400">
+            Swarm mode active - multiple agents working in parallel
+          </div>
+        )}
       </div>
       </div>
     </>

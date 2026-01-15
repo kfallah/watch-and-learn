@@ -1,5 +1,6 @@
 services:
-  playwright-browser:
+  # Browser 1 (primary)
+  browser-1:
     build: ./services/playwright-browser
     ports:
       - "6080:6080" # websockify (noVNC WebSocket)
@@ -23,23 +24,133 @@ services:
       start_period: 15s
       retries: 5
 
-  nextjs-webapp:
-    build: ./services/nextjs-webapp
+  # Browser 2
+  browser-2:
+    build: ./services/playwright-browser
     ports:
-      - "3000:3000"
+      - "6081:6080"
+      - "8766:8765"
+      - "3002:3001"
     environment:
-      - NEXT_PUBLIC_VNC_URL=ws://localhost:6080
-      - NEXT_PUBLIC_VIDEO_WS_URL=ws://localhost:8765
-      - AGENT_WS_URL=ws://python-agent:8000/ws
-    depends_on:
-      playwright-browser:
-        condition: service_healthy
-      python-agent:
-        condition: service_started
+      - DISPLAY=:99
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+    shm_size: '2gb'
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
     networks:
       - app-network
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "6080" ]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
 
-  python-agent:
+  # Browser 3
+  browser-3:
+    build: ./services/playwright-browser
+    ports:
+      - "6082:6080"
+      - "8767:8765"
+      - "3003:3001"
+    environment:
+      - DISPLAY=:99
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+    shm_size: '2gb'
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "6080" ]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+  # Browser 4
+  browser-4:
+    build: ./services/playwright-browser
+    ports:
+      - "6083:6080"
+      - "8768:8765"
+      - "3004:3001"
+    environment:
+      - DISPLAY=:99
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+    shm_size: '2gb'
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "6080" ]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+  # Browser 5
+  browser-5:
+    build: ./services/playwright-browser
+    ports:
+      - "6084:6080"
+      - "8769:8765"
+      - "3005:3001"
+    environment:
+      - DISPLAY=:99
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+    shm_size: '2gb'
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "6080" ]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+  # Browser 6
+  browser-6:
+    build: ./services/playwright-browser
+    ports:
+      - "6085:6080"
+      - "8770:8765"
+      - "3006:3001"
+    environment:
+      - DISPLAY=:99
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+    shm_size: '2gb'
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "6080" ]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+  # Worker 1 (Orchestrator)
+  worker-1:
     build: ./services/python-agent
     ports:
       - "8000:8000"
@@ -50,19 +161,202 @@ services:
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - VOYAGE_API_KEY=${VOYAGE_API_KEY}
-      - MCP_SERVER_URL=http://playwright-browser:3001
+      - MCP_SERVER_URL=http://browser-1:3001
       - DEMO_ENABLED=${DEMO_ENABLED:-false}
       - MONGODB_URI=${MONGODB_URI}
+      - WORKER_ID=1
+      - IS_ORCHESTRATOR=true
+      # James code
+      - WORKER_COUNT=${WORKER_COUNT:-3}
     depends_on:
-      playwright-browser:
+      browser-1:
         condition: service_healthy
     networks:
       - app-network
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)" ]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Worker 2
+  worker-2:
+    build: ./services/python-agent
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./screenshots:/tmp/screenshots
+      - ./logs:/app/logs
+      - ./demo:/app/demo:ro
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+      - MCP_SERVER_URL=http://browser-2:3001
+      - DEMO_ENABLED=${DEMO_ENABLED:-false}
+      - MONGODB_URI=${MONGODB_URI}
+      - WORKER_ID=2
+      - IS_ORCHESTRATOR=false
+      # James code
+      - WORKER_COUNT=${WORKER_COUNT:-3}
+    depends_on:
+      browser-2:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Worker 3
+  worker-3:
+    build: ./services/python-agent
+    ports:
+      - "8002:8000"
+    volumes:
+      - ./screenshots:/tmp/screenshots
+      - ./logs:/app/logs
+      - ./demo:/app/demo:ro
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+      - MCP_SERVER_URL=http://browser-3:3001
+      - DEMO_ENABLED=${DEMO_ENABLED:-false}
+      - MONGODB_URI=${MONGODB_URI}
+      - WORKER_ID=3
+      - IS_ORCHESTRATOR=false
+      # James code
+      - WORKER_COUNT=${WORKER_COUNT:-3}
+    depends_on:
+      browser-3:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Worker 4
+  worker-4:
+    build: ./services/python-agent
+    ports:
+      - "8003:8000"
+    volumes:
+      - ./screenshots:/tmp/screenshots
+      - ./logs:/app/logs
+      - ./demo:/app/demo:ro
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+      - MCP_SERVER_URL=http://browser-4:3001
+      - DEMO_ENABLED=${DEMO_ENABLED:-false}
+      - MONGODB_URI=${MONGODB_URI}
+      - WORKER_ID=4
+      - IS_ORCHESTRATOR=false
+      # James code
+      - WORKER_COUNT=${WORKER_COUNT:-3}
+    depends_on:
+      browser-4:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Worker 5
+  worker-5:
+    build: ./services/python-agent
+    ports:
+      - "8004:8000"
+    volumes:
+      - ./screenshots:/tmp/screenshots
+      - ./logs:/app/logs
+      - ./demo:/app/demo:ro
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+      - MCP_SERVER_URL=http://browser-5:3001
+      - DEMO_ENABLED=${DEMO_ENABLED:-false}
+      - MONGODB_URI=${MONGODB_URI}
+      - WORKER_ID=5
+      - IS_ORCHESTRATOR=false
+      # James code
+      - WORKER_COUNT=${WORKER_COUNT:-3}
+    depends_on:
+      browser-5:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Worker 6
+  worker-6:
+    build: ./services/python-agent
+    ports:
+      - "8005:8000"
+    volumes:
+      - ./screenshots:/tmp/screenshots
+      - ./logs:/app/logs
+      - ./demo:/app/demo:ro
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+      - MCP_SERVER_URL=http://browser-6:3001
+      - DEMO_ENABLED=${DEMO_ENABLED:-false}
+      - MONGODB_URI=${MONGODB_URI}
+      - WORKER_ID=6
+      - IS_ORCHESTRATOR=false
+      # James code
+      - WORKER_COUNT=${WORKER_COUNT:-3}
+    depends_on:
+      browser-6:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Frontend
+  nextjs-webapp:
+    build: ./services/nextjs-webapp
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_VNC_URL=ws://localhost:6080
+      - NEXT_PUBLIC_VIDEO_WS_URL=ws://localhost:8765
+      - AGENT_WS_URL=ws://worker-1:8000/ws
+      # James code
+      - NEXT_PUBLIC_WORKER_COUNT=${WORKER_COUNT:-3}
+    depends_on:
+      browser-1:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+    networks:
+      - app-network
 
 networks:
   app-network:

@@ -4,10 +4,15 @@ import json
 import logging
 import os
 
+# James code
+from typing import Any
+
 from fastapi import FastAPI, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent import BrowserAgent
+# James code
+from orchestrator import Orchestrator
 from mcp_client import MCPClient
 from rag_retriever import RAGRetriever
 from recording_models import RecordingSession
@@ -16,6 +21,11 @@ from voyage_service import VoyageService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# James code
+IS_ORCHESTRATOR = os.getenv("IS_ORCHESTRATOR", "false").lower() == "true"
+WORKER_ID = int(os.getenv("WORKER_ID", "1"))
+WORKER_COUNT = int(os.getenv("WORKER_COUNT", "3"))
 
 app = FastAPI(title="Watch and Learn Agent")
 
@@ -44,14 +54,29 @@ recording_storage: RecordingStorage | None = None
 voyage_service: VoyageService | None = None
 rag_retriever: RAGRetriever | None = None
 
+# James code
+orchestrator: Orchestrator | None = None
+swarm_websockets: list[WebSocket] = []
+swarm_websockets_lock: asyncio.Lock | None = None
+
 
 @app.on_event("startup")
 async def startup_event():
     global recording_agent_lock, shared_mcp_lock, shared_mcp_client
     global recording_storage, voyage_service, rag_retriever
+    # James code
+    global orchestrator, swarm_websockets_lock
 
     recording_agent_lock = asyncio.Lock()
     shared_mcp_lock = asyncio.Lock()
+    # James code
+    swarm_websockets_lock = asyncio.Lock()
+
+    # James code
+    if IS_ORCHESTRATOR:
+        logger.info(f"Initializing orchestrator on worker-{WORKER_ID}")
+        orchestrator = Orchestrator(worker_count=WORKER_COUNT)
+        orchestrator.on_status_update = broadcast_swarm_status
 
     # Initialize MongoDB storage
     logger.info("Initializing MongoDB storage")
@@ -354,6 +379,147 @@ async def save_recording_metadata(session_id: str = Form(...), description: str 
     except Exception as e:
         logger.error(f"Error saving metadata: {e}")
         return {"status": "error", "message": str(e)}, 500
+
+
+# James code
+# =============================================================================
+# Swarm Mode Endpoints (only active on orchestrator worker)
+# =============================================================================
+
+
+async def broadcast_swarm_status(status: dict[str, Any]):
+    """Broadcast swarm status to all connected WebSocket clients."""
+    if not swarm_websockets_lock:
+        return
+
+    async with swarm_websockets_lock:
+        disconnected = []
+        for ws in swarm_websockets:
+            try:
+                await ws.send_json({"type": "swarm_status", "status": status})
+            except Exception:
+                disconnected.append(ws)
+
+        # Remove disconnected clients
+        for ws in disconnected:
+            swarm_websockets.remove(ws)
+
+
+@app.websocket("/swarm/ws")
+async def swarm_websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for swarm status updates."""
+    if not IS_ORCHESTRATOR:
+        await websocket.close(code=4000, reason="Not the orchestrator")
+        return
+
+    await websocket.accept()
+    logger.info("Swarm WebSocket client connected")
+
+    async with swarm_websockets_lock:
+        swarm_websockets.append(websocket)
+
+    try:
+        # Send initial status
+        if orchestrator:
+            await websocket.send_json({
+                "type": "swarm_status",
+                "status": orchestrator.get_status()
+            })
+
+        # Keep connection alive and handle incoming messages
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+
+            if message.get("type") == "execute":
+                # Start swarm execution
+                prompt = message.get("prompt", "")
+                if prompt and orchestrator:
+                    # Run in background so we can continue receiving messages
+                    asyncio.create_task(run_swarm_execution(websocket, prompt))
+
+    except WebSocketDisconnect:
+        logger.info("Swarm WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"Swarm WebSocket error: {e}")
+    finally:
+        async with swarm_websockets_lock:
+            if websocket in swarm_websockets:
+                swarm_websockets.remove(websocket)
+
+
+async def run_swarm_execution(websocket: WebSocket, prompt: str):
+    """Run swarm execution and send final result."""
+    if not orchestrator:
+        return
+
+    try:
+        await websocket.send_json({"type": "swarm_started", "prompt": prompt})
+
+        result = await orchestrator.execute_swarm(prompt)
+
+        await websocket.send_json({
+            "type": "swarm_complete",
+            "result": result
+        })
+    except Exception as e:
+        logger.error(f"Swarm execution error: {e}")
+        await websocket.send_json({
+            "type": "swarm_error",
+            "error": str(e)
+        })
+
+
+@app.post("/swarm/execute")
+async def swarm_execute(request: dict):
+    """Execute a swarm task (REST endpoint for testing)."""
+    if not IS_ORCHESTRATOR:
+        return {"error": "Not the orchestrator", "status": "error"}
+
+    if not orchestrator:
+        return {"error": "Orchestrator not initialized", "status": "error"}
+
+    prompt = request.get("prompt", "")
+    if not prompt:
+        return {"error": "No prompt provided", "status": "error"}
+
+    try:
+        result = await orchestrator.execute_swarm(prompt)
+        return {"result": result, "status": "success"}
+    except Exception as e:
+        logger.error(f"Swarm execution error: {e}")
+        return {"error": str(e), "status": "error"}
+
+
+@app.post("/swarm/claim")
+async def swarm_claim(request: dict):
+    """Claim an item for research (called by worker agents)."""
+    if not IS_ORCHESTRATOR:
+        return {"error": "Not the orchestrator", "approved": False}
+
+    if not orchestrator:
+        return {"error": "Orchestrator not initialized", "approved": False}
+
+    agent_id = request.get("agent_id")
+    item = request.get("item", "")
+
+    if not agent_id or not item:
+        return {"error": "Missing agent_id or item", "approved": False}
+
+    approved = await orchestrator.claim_item(agent_id, item)
+    return {"approved": approved, "item": item}
+
+
+@app.get("/swarm/status")
+async def swarm_status():
+    """Get current swarm status."""
+    if not IS_ORCHESTRATOR:
+        return {"error": "Not the orchestrator"}
+
+    if not orchestrator:
+        return {"error": "Orchestrator not initialized"}
+
+    return orchestrator.get_status()
 
 
 if __name__ == "__main__":

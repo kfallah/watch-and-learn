@@ -59,7 +59,7 @@ class BrowserAgent:
             raise ValueError("GEMINI_API_KEY environment variable is required")
 
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel("gemini-2.0-flash")
+        self.model = genai.GenerativeModel("models/gemini-3-flash-preview")
         self.chat = None
         self.mcp_client: MCPClient | None = None
         self.rag_retriever: RAGRetriever | None = None

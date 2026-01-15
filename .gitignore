@@ -48,3 +48,5 @@ logs/
 */.env
 # Screenshots
 screenshots/
+
+stashed_code/
