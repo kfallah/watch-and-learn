@@ -30,10 +30,10 @@ VIDEO_BUFFER_URL = os.getenv("VIDEO_BUFFER_URL", "http://playwright-browser:8766
 MAX_ITERATIONS = 30
 
 # Maximum consecutive failures per step before asking user for guidance
-MAX_RETRIES_PER_STEP = 3
+MAX_RETRIES_PER_STEP = 15
 
 # Retry configuration for API rate limit errors (429)
-MAX_API_RETRIES = 5
+MAX_API_RETRIES = 15
 INITIAL_RETRY_DELAY = 1.0  # seconds
 MAX_RETRY_DELAY = 60.0  # seconds
 RETRY_MULTIPLIER = 2.0  # exponential backoff multiplier
@@ -55,7 +55,7 @@ class BrowserAgent:
             raise ValueError("GEMINI_API_KEY environment variable is required")
 
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel("gemini-3-pro-preview")
+        self.model = genai.GenerativeModel("gemini-3-flash-preview")
         self.chat = None
         self.mcp_client: MCPClient | None = None
         self.conversation_history = []

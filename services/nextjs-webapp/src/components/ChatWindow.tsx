@@ -337,7 +337,7 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
                   )}
                 </div>
               )}
-              <p className="whitespace-pre-wrap">{message.content}</p>
+              <p className="whitespace-pre-wrap break-words">{message.content}</p>
               <span className="text-xs opacity-50 mt-1 block">
                 {message.timestamp.toLocaleTimeString()}
               </span>
@@ -369,10 +369,14 @@ export default function ChatWindow({ isRecording = false }: ChatWindowProps) {
         <div className="flex gap-2">
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value)
+              e.target.style.height = 'auto'
+              e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'
+            }}
             onKeyDown={handleKeyDown}
             placeholder="Ask the agent to do something..."
-            className="flex-1 bg-gray-800 text-white rounded-lg px-4 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="flex-1 bg-gray-800 text-white rounded-lg px-4 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 overflow-x-hidden break-words"
             rows={1}
             disabled={!isConnected}
           />
