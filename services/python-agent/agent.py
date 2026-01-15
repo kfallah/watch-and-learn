@@ -1,14 +1,17 @@
+import asyncio
 import base64
 import json
 import logging
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import aiohttp
 import google.generativeai as genai
 from google.ai.generativelanguage_v1beta.types.content import Part as GenaiPart
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 from pydantic import ValidationError
 
 from mcp_client import MCPClient, MCPToolResult
@@ -29,6 +32,12 @@ MAX_ITERATIONS = 30
 # Maximum consecutive failures per step before asking user for guidance
 MAX_RETRIES_PER_STEP = 3
 
+# Retry configuration for API rate limit errors (429)
+MAX_API_RETRIES = 5
+INITIAL_RETRY_DELAY = 1.0  # seconds
+MAX_RETRY_DELAY = 60.0  # seconds
+RETRY_MULTIPLIER = 2.0  # exponential backoff multiplier
+
 # Logs directory for dumping context
 LOGS_DIR = Path("/app/logs")
 
@@ -46,7 +55,7 @@ class BrowserAgent:
             raise ValueError("GEMINI_API_KEY environment variable is required")
 
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel("gemini-2.0-flash")
+        self.model = genai.GenerativeModel("gemini-3-flash-pro")
         self.chat = None
         self.mcp_client: MCPClient | None = None
         self.conversation_history = []
@@ -170,7 +179,7 @@ class BrowserAgent:
         demo_parts, metadata = self._load_demo_content()
 
         if demo_parts:
-            await self.chat.send_message_async(demo_parts)
+            await self._send_message_with_retry(demo_parts)
             logger.info("Injected demo content into conversation")
             return metadata
 
@@ -180,6 +189,48 @@ class BrowserAgent:
         """Build system prompt with available tools and their parameter schemas."""
         tools = self.mcp_client.get_tools_for_llm() if self.mcp_client else []
         return build_system_prompt(tools)
+
+    async def _send_message_with_retry(self, message: Any) -> Any:
+        """Send a message to Gemini with exponential backoff retry on rate limits.
+
+        Handles 429 (ResourceExhausted) and 503 (ServiceUnavailable) errors
+        by retrying with exponential backoff up to MAX_API_RETRIES times.
+
+        Args:
+            message: The message to send (can be string, list of parts, etc.)
+
+        Returns:
+            The response from Gemini API
+
+        Raises:
+            RuntimeError: If chat session is not initialized
+            ResourceExhausted: If max retries exceeded for rate limit errors
+            ServiceUnavailable: If max retries exceeded for service errors
+        """
+        if self.chat is None:
+            raise RuntimeError("Chat session not initialized. Call initialize() first.")
+
+        delay = INITIAL_RETRY_DELAY
+
+        for attempt in range(MAX_API_RETRIES):
+            try:
+                return await self.chat.send_message_async(message)
+            except (ResourceExhausted, ServiceUnavailable) as e:
+                if attempt == MAX_API_RETRIES - 1:
+                    logger.error(
+                        f"Max retries ({MAX_API_RETRIES}) exceeded for API call: {e}"
+                    )
+                    raise
+
+                logger.warning(
+                    f"API rate limited or unavailable, retrying in {delay:.1f}s "
+                    f"(attempt {attempt + 1}/{MAX_API_RETRIES}): {e}"
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * RETRY_MULTIPLIER, MAX_RETRY_DELAY)
+
+        # This should never be reached due to the raise in the loop
+        raise RuntimeError("Unexpected exit from retry loop")
 
     def set_recording(self, enabled: bool):
         """Enable or disable recording mode."""
@@ -468,7 +519,7 @@ class BrowserAgent:
 
         try:
             # Send initial message to Gemini
-            response = await self.chat.send_message_async(user_message)
+            response = await self._send_message_with_retry(user_message)
             response_text = response.text
 
             # Collect user messages to return at the end
@@ -544,7 +595,7 @@ class BrowserAgent:
                 follow_up_parts = self._build_tool_result_message(tool_name, result)
 
                 # Send result to Gemini and get next response
-                response = await self.chat.send_message_async(follow_up_parts)
+                response = await self._send_message_with_retry(follow_up_parts)
                 response_text = response.text
 
                 # Dump context after each tool execution for debugging
