@@ -39,6 +39,12 @@ logger = logging.getLogger(__name__)
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))
 COMPANIES_DATA_PATH = os.getenv("COMPANIES_DATA_PATH", "/app/data/companies.json")
 
+# Service Discovery Configuration (external ports exposed to frontend)
+ORCHESTRATOR_WS_PORT = int(os.getenv("ORCHESTRATOR_WS_PORT", "8100"))
+WORKER_BASE_PORT = int(os.getenv("WORKER_BASE_PORT", "8001"))
+VIDEO_STREAM_BASE_PORT = int(os.getenv("VIDEO_STREAM_BASE_PORT", "8766"))
+VNC_BASE_PORT = int(os.getenv("VNC_BASE_PORT", "6081"))
+
 # Global state
 worker_pool: Optional[WorkerPool] = None
 command_parser: Optional[CommandParser] = None
@@ -99,6 +105,44 @@ app.add_middleware(
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "service": "orchestrator"}
+
+
+@app.get("/services")
+async def get_services():
+    """Service discovery endpoint - returns all service URLs for frontend.
+
+    This eliminates hardcoded ports in the frontend by providing a single
+    source of truth for service locations.
+    """
+    worker_count = worker_pool.max_workers if worker_pool else MAX_WORKERS
+
+    # Build worker URLs
+    workers = []
+    for i in range(worker_count):
+        workers.append({
+            "id": i + 1,
+            "ws": f"ws://localhost:{WORKER_BASE_PORT + i}/ws",
+            "http": f"http://localhost:{WORKER_BASE_PORT + i}",
+        })
+
+    # Build browser/video stream URLs
+    browsers = []
+    for i in range(worker_count):
+        browsers.append({
+            "id": i + 1,
+            "video_ws": f"ws://localhost:{VIDEO_STREAM_BASE_PORT + i}",
+            "vnc_ws": f"ws://localhost:{VNC_BASE_PORT + i}",
+        })
+
+    return {
+        "orchestrator": {
+            "ws": f"ws://localhost:{ORCHESTRATOR_WS_PORT}/ws",
+            "http": f"http://localhost:{ORCHESTRATOR_WS_PORT}",
+        },
+        "workers": workers,
+        "browsers": browsers,
+        "worker_count": worker_count,
+    }
 
 
 @app.get("/status", response_model=OrchestratorStatus)

@@ -1,30 +1,11 @@
 'use client'
 
-// James code
 import { useMemo } from 'react'
 import { useMJPEGVideoStream } from '@/hooks/useMJPEGVideoStream'
+import { useVideoStreamUrls, useServices } from '@/contexts/ServiceContext'
 
 interface BrowserGridProps {
   workerCount: number
-}
-
-function buildStreamUrls(baseUrl: string, count: number): string[] {
-  try {
-    const parsed = new URL(baseUrl)
-    const basePort = parsed.port
-      ? parseInt(parsed.port, 10)
-      : parsed.protocol === 'wss:'
-      ? 443
-      : 80
-
-    return Array.from({ length: count }, (_, index) => {
-      const url = new URL(parsed.toString())
-      url.port = String(basePort + index)
-      return url.toString()
-    })
-  } catch {
-    return Array.from({ length: count }, () => baseUrl)
-  }
 }
 
 function MJPEGTile({ url, label }: { url: string; label: string }) {
@@ -69,14 +50,40 @@ function MJPEGTile({ url, label }: { url: string; label: string }) {
 }
 
 export default function BrowserGrid({ workerCount }: BrowserGridProps) {
-  const baseUrl = process.env.NEXT_PUBLIC_VIDEO_WS_URL || 'ws://localhost:8765'
-  const urls = useMemo(() => buildStreamUrls(baseUrl, workerCount), [baseUrl, workerCount])
+  // Get video stream URLs from service discovery
+  const videoUrls = useVideoStreamUrls()
+  const { isLoading, error } = useServices()
+
+  // Limit to workerCount
+  const urls = useMemo(() => videoUrls.slice(0, workerCount), [videoUrls, workerCount])
   const rowClass = workerCount > 3 ? 'grid-rows-2' : 'grid-rows-1'
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-full bg-gray-900">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-4" />
+          <p className="text-gray-400">Discovering services...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error && urls.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full bg-gray-900">
+        <div className="text-center">
+          <p className="text-red-400 mb-2">Service discovery failed</p>
+          <p className="text-gray-500 text-sm">{error}</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={`grid grid-cols-3 ${rowClass} gap-2 w-full h-full auto-rows-fr`}>
       {urls.map((url, index) => (
-        <MJPEGTile key={url} url={url} label={`Agent ${index + 1}`} />
+        <MJPEGTile key={`agent-${index}`} url={url} label={`Agent ${index + 1}`} />
       ))}
     </div>
   )

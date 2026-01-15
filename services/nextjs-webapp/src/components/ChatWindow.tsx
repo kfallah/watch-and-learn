@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import RecordingMetadataModal from './RecordingMetadataModal'
+import { useServices, useOrchestratorUrl, useWorkerUrls } from '@/contexts/ServiceContext'
 
 interface Message {
   id: string
@@ -65,6 +66,11 @@ export default function ChatWindow({
   const swarmWsRef = useRef<WebSocket | null>(null)
   const prevIsRecordingRef = useRef<boolean>(false)
 
+  // Get service URLs from context
+  const { services, isLoading: isServicesLoading } = useServices()
+  const orchestrator = useOrchestratorUrl()
+  const workers = useWorkerUrls()
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
@@ -74,9 +80,8 @@ export default function ChatWindow({
   }, [messages])
 
   const connectWebSocket = useCallback(() => {
-    const wsUrl = typeof window !== 'undefined'
-      ? `ws://${window.location.hostname}:8000/ws`
-      : 'ws://localhost:8000/ws'
+    // Use service discovery URL, fallback to default
+    const wsUrl = workers[0]?.ws || 'ws://localhost:8001/ws'
 
     const ws = new WebSocket(wsUrl)
 
@@ -143,15 +148,18 @@ export default function ChatWindow({
     }
 
     wsRef.current = ws
-  }, [])
+  }, [workers])
 
   useEffect(() => {
-    connectWebSocket()
+    // Wait for services to be loaded before connecting
+    if (!isServicesLoading && workers.length > 0) {
+      connectWebSocket()
+    }
 
     return () => {
       wsRef.current?.close()
     }
-  }, [connectWebSocket])
+  }, [connectWebSocket, isServicesLoading, workers])
 
   // James code
   useEffect(() => {
@@ -178,12 +186,9 @@ export default function ChatWindow({
         )
       }
 
-      // Also call HTTP endpoint for control mode
+      // Also call HTTP endpoint for control mode - use service discovery URL
       try {
-        const agentUrl = typeof window !== 'undefined'
-          ? `http://${window.location.hostname}:8000`
-          : 'http://localhost:8000';
-
+        const agentUrl = workers[0]?.http || 'http://localhost:8001'
         const endpoint = isRecording ? '/recording/start' : '/recording/stop';
         const response = await fetch(`${agentUrl}${endpoint}`, { method: 'POST' });
         const data = await response.json();
@@ -209,13 +214,12 @@ export default function ChatWindow({
     };
 
     updateRecording();
-  }, [isRecording, isConnected])
+  }, [isRecording, isConnected, workers])
 
   // James code
   const connectSwarmWebSocket = useCallback(() => {
-    const wsUrl = typeof window !== 'undefined'
-      ? `ws://${window.location.hostname}:8000/swarm/ws`
-      : 'ws://localhost:8000/swarm/ws'
+    // Use service discovery URL, fallback to default
+    const wsUrl = orchestrator?.ws || 'ws://localhost:8100/ws'
 
     const ws = new WebSocket(wsUrl)
 
@@ -280,7 +284,7 @@ export default function ChatWindow({
     }
 
     swarmWsRef.current = ws
-  }, [onSwarmStatusUpdate, onSwarmEnd])
+  }, [onSwarmStatusUpdate, onSwarmEnd, orchestrator])
 
   // James code
   const sendSwarm = () => {
@@ -357,9 +361,8 @@ export default function ChatWindow({
       throw new Error('No session ID available')
     }
 
-    const agentUrl = typeof window !== 'undefined'
-      ? `http://${window.location.hostname}:8000`
-      : 'http://localhost:8000'
+    // Use service discovery URL
+    const agentUrl = workers[0]?.http || 'http://localhost:8001'
 
     const response = await fetch(`${agentUrl}/recording/metadata`, {
       method: 'POST',
